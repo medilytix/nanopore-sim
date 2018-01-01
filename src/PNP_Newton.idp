@@ -1,0 +1,137 @@
+// file: "tt_tanNlPNP_2.idp"
+
+// modified from /Users/sauer/FH_June2015/tt-FH-june2015.edp;
+// meant for a 2D flow around a circular barrier so not axisymmetric;
+// uses (close to) Squires-Bazant scaling
+
+// phi0 = E0*W*L0 for external field in x direction, psi = (le*phi0)/(kB*T)
+// ip = n+/(2*n0*psi), in = n-/(2*n0*psi) normalized ion charge densities
+// (N.B. -  not quite the same as S-B (but should also be vaild) which is
+// n+ - n- = 2*n0*psi*r, n+ + n- -2*n0 = 2*n0*psi^2 for the difference and
+// sum useful in understanding limiting cases)
+
+// fespace Vh(Th,P2);
+// Vh ip=ipnorm,tip, dip, ipold;        // related to ion positive concentrations
+// Vh in=innorm,tin, din, inold;        // related to ion negative concentrations
+
+sfile = FILE;
+if(mon>0) { cout << "\n enter \"" << FILE << "\"\n"; cout.flush; }
+macro vgradu(v1,v2,u)  ([v1,v2]'*[dx(u),dy(u)]) //
+macro VgradU(v1,v2,u1,u2)  [vgradu(v1,v2,u1), vgradu(v1,v2,u2)] //
+
+// axisymmetric, rotation about y-axis
+func axi = 2*pi*x;
+
+real coef2 = 1e-6;	// used to force n+ = 2*n0*psi*p, n- = 2*n0*psi*n
+
+// S-B scaling using zeta-equivalent surface charge for zeta = -0.100 V
+// C/m^2, see $FF/PNP+NScalc2016/tmp_Aug/eps_sigma_Gauss_7.edp
+//sigma = -1.26e-11;
+// see ../FreeFEM++/PNP+NScalc2017/tmp_Jan/eps_sigma_Gauss_9.edp  170129 morn
+sigma = -6.91e-12;
+// see $FF/EOFbkgnd/S-BscaledSigma.pdf
+real sigmaSB = sigma/(2*n0*psi*le*L0^2);
+if(mon>1) { PVS(sigma,": Coulombs/meter^2\t"); PVS(sigmaSB,": sigma/(2*n0*psi*le*L0^2), Squires-Bazant scaling\n"); }
+
+   problem tanNlPNP([dphi,dip,din],[tphi,tip,tin],solver=sparsesolver) =
+// DF start
+     int2d(Th,rfluid) ( axi * (
+	// Poisson-Nernst-Planck Equations
+	    grad(dip)'*grad(tip)			//' positive concentration (in fluid only)
+	  + psi * dip * grad( phi)'*grad(tip)		//'
+	  + psi *  ip * grad(dphi)'*grad(tip)		//'
+	  - Pe * vgradu( U1, U2,tip) * dip 
+	  
+	  + grad(din)'*grad(tin)			//' negative concentration (in fluid only)
+	  - psi * din * grad( phi)'*grad(tin)		//'
+	  - psi * in  * grad(dphi)'*grad(tin)		//'
+	  - Pe * vgradu( U1, U2,tin) * din
+        )
+     )
+
+   // Poisson's Eqn
+   + int2d(Th,rfluid) ( axi * ( // in fluid region
+	  + deltasq*psi * grad(dphi)'*grad(tphi)	//' (in fluid only)
+	  - (dip-din)*tphi 
+        )
+     )
+   + int2d(Th,rsolid) ( axi * ( // in solid region
+            deltasq*psi * epsrSi/epsrH2O * grad(dphi)'*grad(tphi)
+        // pseudo equation forcing dip, din = 0 
+          + ( dip*tip + din*tin)*coef2	// (in solid only)     
+        )
+     )
+
+// /*@ eliminate ion solid BC *@/
+//    // solid borders: N.B. - [N.x,N.y]'*[U1,U2] = 0 at impenetrable solid
+//    // fix (+) ion velocity normal to solid borders DF terms
+//     + int1d(Th,rfluid,lsolid) ( axi * (
+//             tip*[N.x,N.y]'*grad(dip)		// scaled normal gradient
+//           + psi*tip*dip*[N.x,N.y]'*grad( phi)	// electrophroetic term
+//           + psi*tip* ip*[N.x,N.y]'*grad(dphi)	// electrophroetic term
+//      
+//    // fix (-) ion velocity normal to solid borders DF terms
+//           + tin*[N.x,N.y]'*grad(din)		// scaled normal gradient
+//           - psi*tin*din*[N.x,N.y]'*grad( phi)	// electrophroetic term
+//           - psi*tin* in*[N.x,N.y]'*grad(dphi)	// electrophroetic term
+//        )
+//      )
+// /@* eliminate ion solid BC @*/
+// DF end
+
+// -F start
+   - int2d(Th,rfluid) ( axi * (
+
+	// Planck-Nernst-Poisson Equations
+	    grad(ip)'*grad(tip)			//' positive concentration
+	  + psi * ip * grad(phi)'*grad(tip)	//'
+	  - Pe * vgradu(U1,U2,tip) * ip
+
+	  + grad(in)'*grad(tin)			//' negative concentration
+	  - psi * in * grad(phi)'*grad(tin)	//'
+	  - Pe * vgradu(U1,U2,tin) * in
+        )
+     )
+
+   // Poisson's Eqn	'
+   - int2d(Th,rfluid) ( axi * ( // in fluid region
+	    deltasq*psi * grad(phi)'*grad(tphi)	//'
+	  - (ip-in)*tphi 
+        )
+     )
+   - int2d(Th,rsolid) ( axi * ( // in solid region
+            deltasq*psi * epsrSi/epsrH2O * grad(phi)'*grad(tphi)	
+        // pseudo equation forcing ip, in = 0 
+          + ( ip*tip + in*tin)*coef2     
+        )
+     )
+
+   + int1d(Th,rfluid,lsig) ( axi * sigmaSB*tphi )	// constant surface charge
+
+// /*@ eliminate ion solid BC *@/
+//    // solid borders: N.B. - [N.x,N.y]'*[U1,U2] = 0 at impenetrable solid
+//    // fix (+) ion velocity normal to solid borders DF terms
+//     + int1d(Th,rfluid,lsolid) ( axi * (
+//             tip*[N.x,N.y]'*grad(ip)		// scaled normal gradient
+//           + psi*tip*ip*[N.x,N.y]'*grad(phi)	// electrophroetic term
+//      
+//    // fix (-) ion velocity normal to solid borders DF terms
+//           + tin*[N.x,N.y]'*grad(in)		// scaled normal gradient
+//           - psi*tin*in*[N.x,N.y]'*grad(phi)	// electrophroetic term
+//        )
+//      )
+// /@* eliminate ion solid BC @*/
+
+// -F end
+
+// Dirichlet boundary conditions
+// potential, fluid input and output far from charged surface purturbation
+// equivalent to unlimited ion charge flow across input & output
+// by maintaining initial concentration n0 at these borders
+   + on(linp,lout,lVtop,lVbot ,dip=0,din=0)
+// equivalent to imposing a constant external field E0 = (phi(input)-phi(output))/height
+   + on(lVtop,lVbot, dphi=0)
+   ; // end tanNlPNP
+
+if(mon>0) { cout << "  exit \"" << FILE << "\"\n\n"; cout.flush; }
+

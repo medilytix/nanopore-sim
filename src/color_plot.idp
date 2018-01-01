@@ -1,0 +1,29 @@
+// file: "color_plot.idp"
+// restrich range of colors
+
+sfile=FILE;
+// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< plot setup below
+// modify plotted colors, see .../examples++-tutorial/plot.edp
+real[int] HSV=[  // color hsv model
+//    H    S    V
+ 2.5/6.,   1,   1, // light blue
+  4./6.,   1,   1, //  blue
+  5./6., 0.5,   1, //  magenta2
+  5./6.,   1,   1, //  magenta
+      1,   1,   1  //  red
+   ];
+
+// variations on plotting a scalar
+  string sp;    // string for plots
+//macro plts fill=1,value=1,cmm=sp,ps=sp+".eps",                              wait=bwait//
+//macro plts fill=1,value=1,cmm=sp,ps=sp+".eps",hsv=HSV,                      wait=bwait//
+//macro plts fill=1,value=1,cmm=sp,ps=sp+".eps",        nbiso=NBISO,          wait=bwait//
+//macro plts fill=1,value=1,cmm=sp,ps=sp+".eps",        nbiso=NBISO,viso=VISO,wait=bwait//
+  macro plts fill=1,value=1,cmm=sp,ps=sp+".eps",hsv=HSV,nbiso=NBISO,viso=VISO,wait=bwait//
+
+//macro pltv coef=CF,value=1,cmm=sp,ps=sp+".eps",                                      wait=bwait//
+//macro pltv coef=CF,value=1,cmm=sp,ps=sp+".eps",        nbarrow=NBARROW,              wait=bwait//
+//macro pltv coef=CF,value=1,cmm=sp,ps=sp+".eps",        nbarrow=NBARROW,varrow=VARROW,wait=bwait//
+  macro pltv coef=CF,value=1,cmm=sp,ps=sp+".eps",hsv=HSV,nbarrow=NBARROW,varrow=VARROW,nbiso=NBISO,viso=VISO,wait=bwait//
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> plot setup above
+

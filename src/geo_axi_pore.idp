@@ -1,0 +1,178 @@
+// file: "geo_axi_pore.idp", derived from "minimal_CMI_geo_2.idp"
+// adds in notches for conductor top right and lower right for CMI EOF potential difference
+// test "geo_axi_pore.idp"
+// expects 'int mon' and 'bool bslant' to be declared and set
+// expects 'real R, D, W, H' to be declared and set
+// Th is single mesh with fluid and solid regions formed by joining endpoints
+
+/*@ make active if stand alone below *@/
+string sfile = FILE;
+int mon=4, monold=mon, ie=0, line;
+include "util.idp"
+bool bslant=true;
+bool bEperp=false;
+bool bwait = false;                     // true=>pause at plot, false=>hold plot arg BW sec
+real W=20, H=W, R=0.10, D=2;
+bool badapt=false;
+int S=2;
+mesh Th;
+string sBW;     // string for BW macro
+macro BW(t) if(!bwait) { sBW="sleep "+t; system(sBW); }//
+/@* make active if stand alone above @*/
+
+sfile=FILE;
+if(mon>0) { cout << "\n enter \"" << FILE << "\"\n"; cout.flush; }
+
+real L = (H-D)/2;
+if(mon>1) { // what file does
+   cout << "\n outer domain rectangle width W, height H\n";
+   cout << "  axisymmetric conical pore, min radius R\n";
+   cout << "  if bslant=true, silicon V-groove\n";
+   cout << "  pore insert radius R, dR slant added on at top\n";
+   cout << "  W=" << W << ", H=" << H << ". R=" << R << ", D=" << D <<  ", bslant=" << bslant << "\n\n";
+}
+
+assert((H-D)>0);
+real dR=0, theta=0;
+real cst=1, snt=0;	// globals for possible later use
+if(bslant) {
+   theta = atan(1/sqrt(2));
+   real theta2 = 90 - theta*180/pi; 
+   PVS(theta2,"  degrees, silicon V-groove angle\n");
+   dR = D*tan(theta);
+   cst = cos(theta);  snt = sin(theta);
+   if(mon>1) { PV(dR); PVS(cst,"cos(theta), "); PVS(snt,"sin(theta)\n"); }
+}
+
+assert((W-R-dR)>0);
+real rw=W/20, rh=H/40;	// top & bottom conductor width & height (ellipse for CMI)
+//               10    11    12  13   14   15   16   17     18    19
+real[int] xf = [0, W-rw, W-rw,  W,  W,   W,    W, W-rw, W-rw,  0],
+          yf = [0,    0,   rh, rh,  L, L+D, H-rh, H-rh,    H,  H];
+int nxyf = xf.n;
+
+border bf(t=0,1;i)
+{
+// i is the the index variable of the multi border loop
+  int ii = (i+1)%nxyf; real t1 = 1-t;
+  x =  xf[i]*t1 + xf[ii]*t;
+  y =  yf[i]*t1 + yf[ii]*t;
+  label = 10 + i;
+}
+
+real hyp = sqrt(square(D) + square(dR));
+int Ss = max(3.,3.*S);	// TST
+//              10        11      12       13     14    15        16    17      18       19    
+int[int] nf = [S*(W-rw), Ss*rh, Ss*rw, S*(L-rh), S*D, S*(L-rh), Ss*rw, Ss*rh, S*(W-rw), S*H];
+if(mon>3) { plot(bf(nf),cmm="bf",wait=0); system("sleep 1"); }
+
+// solid membrane border forming pore
+border S21(t=0,1) { x=W+(R+dR-W)*t; y=L+D;     label=21; }
+border S22(t=0,1) { x=R+dR-dR*t;    y=L+D-D*t; label=22; }
+border S23(t=0,1) { x=R+(W-R)*t;    y=L;       label=23; }
+
+int[int] lgi = [22];
+
+macro bs(S) ( S21(S*(W-R-dR)) + S22(2*S*hyp) + S23(S*(W-R)) )//
+
+real XMM=R+dR/2, YMM=H/2;
+real dd = R/4;
+func BBMM = [[XMM-4*dd,YMM-2*dd],[XMM+4*dd,YMM+2*dd]];
+
+   Th = buildmesh( bf(nf) + bs(S) );
+   if(mon>3) { // plot borders of Th w/o monitor line & Th
+      plot( bf(nf)+bs(S),cmm="borders",wait=0); system("sleep 1");
+      plot(Th,cmm="Th no monitor line",wait=0); system("sleep 1");
+      plot(Th,cmm="BBM Th no monitor line",bb=BBMM,wait=0); system("sleep 1");
+   }
+
+func real hsize(mesh& Wh, int[int]& lgi)
+{
+ real leni = int1d(Wh,lgi)(1.0);
+ int nvi = int1d(Wh,lgi)(1.0/lenEdge);
+ return leni/nvi; // average size of triangle on interface
+} // func hsize
+
+if(bEperp) {
+   real ds=0, DS=0;
+   ds = 0.1*hsize(Th,lgi);	// same as hhmin for adaptmesh
+   ds = max(0.01,ds);
+   DS = min(hyp/20, D/6);
+   DS = max(0.005,DS);
+   if(mon>2)  { PV(ds); PVn(DS); }
+
+   real X0,Y0, X1,Y1; int Sm = max(4.0,S*4*DS);
+   X0 = R+dR/2-ds*cos(theta); Y0 = H/2+ds*sin(theta);		// mid-point monitor line
+   X0 = X0 - DS*sin(theta);   Y0 = Y0 - DS*cos(theta);		// lower point monitor line
+   X1 = X0 + 2*DS*sin(theta); Y1 = Y0 + 2*DS*cos(theta);
+   border bmF(t=0,1) { x=X0+(X1-X0)*t; y=Y0+(Y1-Y0)*t; label=40; }
+
+   real XX0,YY0, XX1,YY1;
+   XX0 = R+dR/2+ds*cos(theta); YY0 = H/2-ds*sin(theta);		// mid-point monitor line
+   XX0 = XX0 - DS*sin(theta);   YY0 = YY0 - DS*cos(theta);	// lower point monitor line
+   XX1 = XX0 + 2*DS*sin(theta); YY1 = YY0 + 2*DS*cos(theta);
+   border bmS(t=0,1) { x=XX0+(XX1-XX0)*t; y=YY0+(YY1-YY0)*t; label=30; }
+
+   if(DS >= 0.005) {
+      //ThF = buildmesh( bf(nf) + bmF(Sm) );
+      Th = buildmesh( bf(nf) + bs(S) + bmF(Sm) + bmS(Sm) );
+   } else {
+      //ThF = buildmesh( bf(nf) );
+      Th = buildmesh( bf(nf) + bs(S) );
+      bEperp = false;
+      cout << " !!!! bEperp changed to \"false\"\n";
+   }
+}
+
+if(mon>3 && bEperp) { plot(Th,bb=BBMM,cmm="BBMM_Th",ps="BBM_Th.eps",wait=0); system("sleep 1"); }
+
+if(mon>2) {
+   plot(Th,cmm="Th",ps="Th.eps",wait=0); system("sleep 1");
+   cout << " Th.hmin = " << Th.hmin << endl;
+}
+
+if(mon>2) { // numeric label, border lengths
+   cout << endl;
+   cout << " numeric label, border lengths\n";
+   for(int i=0; i<=100; i++) {
+      real lg = int1d(Th,i)(1.0);
+      if(lg>1e-6) cout << i << "\t" << lg << endl;
+   }
+   cout << " Th, fluid region = " << Th(1e-3,H/2).region << endl;
+   cout << " Th, solid region = " << Th(W-1e-3,H/2).region << endl;
+   cout << endl;
+}
+   if(mon>2) { // test normal components
+	cout << " Th normal vectors\n";
+	for(int j=0; j<100; j++) {
+	   real ll = int1d(Th,j)(1.0);
+	   if(ll>1e-10) {
+	      real nx = int1d(Th,j)(N.x); if(abs(nx)<1e-10) nx = 0;
+	      real ny = int1d(Th,j)(N.y); if(abs(ny)<1e-10) ny = 0;
+	      cout << j << "\t" << nx/ll << "\t" << ny/ll << endl;
+	   }
+	}
+   }
+
+if(mon>1) { cout << " Th.nt = " << Th.nt << ", hmin = " << Th.hmin << ", Th.hmax = " << Th.hmax << endl; }
+if(badapt && S<4 && !bEperp) {
+    real hhmin, hhmax;
+    hhmax = 10*Th.hmin;
+    hhmin = 1e-1*Th.hmin;
+    hhmin = max(0.001,hhmin);
+	hhmin *=2; hhmax *=2;	// TST *1/2 denser mesh than max density
+    if(mon>3) { PVS(hhmin,"h pore region"); PVS(hhmax,"h non-pore region"); }
+    func hh = hhmin*(1+max(max(x-1.5*(R+dR),abs (y-H/2)-D),0.));
+    Th = adaptmesh(Th,hh,IsMetric=1,nbvx=1000000,hmax=hhmax);
+    if(mon>2) {
+       strp="Th_adapted"; plot(Th,cmm=strp,ps=strp+".eps",wait=bwait); BW(1);
+       plot(Th,cmm="BBM Th adapted",bb=BBMM,wait=bwait); BW(1);
+       cout << " Th.nt = " << Th.nt << ", hmin = " << Th.hmin << ", Th.hmax = " << Th.hmax << endl;
+    }
+}
+
+/*@ below *@/
+/@* above @*/
+
+if(mon>0) { cout << "  exit \"" << FILE << "\"\n\n"; cout.flush; }
+

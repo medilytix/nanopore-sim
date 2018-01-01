@@ -1,0 +1,497 @@
+// file: "trk_PNP_N-S.edp"
+
+// Drag equation evolution: starting with v = velocity difference of spherical particle
+// of mass Mp and radius Rp at zero, evolve until close to terminal velocity vt
+// with external force FE causing acceleration FE/Mp and fluid flow u pushing;
+// then switch to no real changes in v until if and when the FE/Mp (acceleration) changes
+
+// <<< admin
+// iflg is 1 for phase 1 (approach to terminal velocity, very small time increment),
+// 2 for much larger time increment with v = vt constant, 3 for exit 
+int iflg = 1;
+real tst=0;	// tmp variable, may be overwritten after set and used initially
+real tolDY=2e-2;		// phase 2 tracking tolerance for writing to trackn.dat file(s)
+real tol1=1e-2, tol2=1.5*tol1;	// tolerances on (v-uy(x,y)-vt)/uy(x,y) to break out of phase 1, 2
+// admin >>>
+
+// <<< geometry
+// needed by "read_geo.idp" & to obtain electric and fluid flow fields
+//##cyld E0=1e4 string base = "../sim_EOF_final_2/sim_cyld_R=2.0,E0=1e4/";	// cyld
+//##cone E0=1e4 string base = "../sim_EOF_final_2/sim_cone_R=0.2,E0=1e4/";	// cone
+//string base = "../sim_EOF_final_2/sim_cone_R=0.2,E0=2e4/";	// cone
+string base = "./";
+
+// !!+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+!!
+// -<>-<>-<>-<>-<>-<>-<>- admin parameters
+verbosity=0;
+int mon=3, monold=mon;
+if(mon>0) { cout << "\n enter \"" << FILE << "\"\n"; cout.flush; }
+bool bwait=false;
+int line=0;
+string sfile=FILE;
+include "util.idp" ; sfile=FILE;	// utilities, mainly printing
+string sBW;	// string for BW macro
+macro BW(t) if(!bwait && !t) { sBW="sleep "+t; system(sBW); }//
+bool bbord=false;	// false means ouside membrane border in fluid
+
+// -<>-<>-<>-<>-<>-<>-<>- retrieve mesh, E_field, flow velocity below
+string smsh;	// path to .msh file
+include "read_geo.idp" ; sfile=FILE;
+
+mesh  Th = readmesh(smsh);
+if(mon>1) { strp="Th_mesh"; plot(Th,cmm=strp,wait=bwait); BW(0); }
+int rfluid = Th(1e-3,H/2).region;	// electrolyte fluid
+int rsolid = Th(W-1e-3,H/2).region;	// solid membrane region forming pore
+
+mesh ThF = trunc(Th,region==rfluid);
+mesh ThS = trunc(Th,region==rsolid);
+
+real theta=0, dR=0;
+if(bslant) {
+   theta = atan(1/sqrt(2));
+   dR = D*tan(theta);
+   if(mon>1) {
+      PV(R+dR); PV(180*theta/pi); PVn(dR);
+   }
+}
+
+// -<>-<>-<>-<>-<>-<>-<>- trajectory parameters
+//##cyld,E0=1e4 string tparm = "cyld_Q=-0.1,R=2,E0=1e4.idp";	// cyld
+//##cone,E0=1e4 string tparm = "cone_Q=-25,R=.2,E0=1e4.idp";	// cone
+string tparm = "cone_Q=-25,R=.2,E0=2e4.idp";	// cone
+system("cp " + tparm + " " + base);	// copies tracking parameters to directory to hold results
+//##cyld,E0=1e4 include "cyld_Q=-0.1,R=2,E0=1e4.idp" ; sfile=FILE;// sets Q, kDa, DYmax, NTRK, starting coords XX(NTRK), YY(NTRK)
+include "cone_Q=-25,R=.2,E0=1e4.idp" ; sfile=FILE;// sets Q, kDa, DYmax, NTRK, starting coords XX(NTRK), YY(NTRK)
+//##cone,E0=2e4 include "cone_Q=-25,R=.2,E0=2e4.idp" ; sfile=FILE;// sets Q, kDa, DYmax, NTRK, starting coords XX(NTRK), YY(NTRK)
+
+// -<>-<>-<>-<>-<>-<>-<>- border ASCII labels
+// labels from ../sim_EOF_final_1.edp
+int[int] lVtop = [16,17];		// top EOF electrode
+int[int] lVbot = [11,12];		// bottom EOF electrode
+int[int] lmbrn = [21,22,23];		// silicon membrane containing pore on y-axis
+int[int] lsig = lmbrn;			// membrane, impenetrable, charged, no-slip surface
+int[int] lslant = [22];			// pore wall, slanted if theta != 0
+int[int] lnos = [lVbot,lVtop,lmbrn];	// no slip, impenetrable surfaces
+int[int] laxis = [19];			// axisymmetric rotation axis
+int[int] linp = [18];			// fluid input
+int[int] lout = [10];			// fluid output
+int[int] lGauss(10:18);			// for enclosed charge determination, corrected from 10:19 170605
+int[int] lOmega(10:19);			// outer border
+
+if(mon>2) {
+   cout<<endl;
+   prarrS(lVtop,"\t -- top EOF electrode \n");
+   prarrS(lVbot,"\t -- bottom EOF electrode \n");
+   prarrS(lmbrn,"\t -- silicon membrane containing pore on y-axis \n");
+   prarrS(lsig,"\t -- membrane, impenetrable, charged, no-slip surface \n");
+   prarrS(lslant,"\t\t -- pore wall, slanted if theta != 0 \n");
+   prarrS(lnos,"\n\t\t -- no slip, impenetrable surfaces \n");
+   prarrS(laxis,"\t\t -- axisymmetric rotation axis \n");
+   prarrS(linp,"\t\t -- fluid input\n");
+   prarrS(lout,"\t\t -- fluid output \n");
+   prarrS(lGauss,"\t -- for enclosed charge determination \n");
+   prarrS(lOmega,"\t -- outer domain border \n");
+   cout.flush;
+}
+
+real CF=0;	// may be overwritten after use, for plot coef
+
+// expanded views
+real DD = max(0.5,dR/3);
+real XU = R+dR, YU = (H+D)/2;
+func BBU = [[XU-2*DD,YU-1.3*DD],[XU+2*DD,YU+0.7*DD]];
+real XL = R, YL = (H-D)/2;
+func BBL = [[XL-DD,YL-1.5*DD],[XL+DD,YL+2.0*DD]];
+real XM=R+dR/2, YM=H/2;	// mid-point
+func BBM = [[XM-3*DD,YM-4*DD],[XM+3*DD,YM+4*DD]];
+func BB = [[R/4,(H-D)/2-1],[R+dR+0.5,(H+D)/2+1]];
+//!!	PV(R); PV(dR); PV(H); PVn(D);
+//!!	PV(D/10); PV(dR/3); PVn(DD);
+//!!	PV(XU); PVn(YU);
+//!!	PV(XM); PVn(YM);
+//!!	PV(XL); PVn(YL);
+//!!	exit(-99);
+
+fespace Vh2(Th,P2), Vh2dc(Th,P2dc);
+fespace VhF2(ThF,P2), VhF2dc(ThF,P2dc);
+
+VhF2 ux, uy;	// see ../calc_E,U_fields/sim_EOF_final_2.edp, line 561
+Vh2 EX, EY;	// see ../calc_E,U_fields/sim_EOF_final_2.edp, lines 345-346
+
+{ // read solutions below
+   strp = base + "ux.txt";
+   ifstream fileux(strp);
+   fileux >> ux[];
+
+   strp = base + "uy.txt";
+   ifstream fileuy(strp);
+   fileuy >> uy[];
+
+   strp = base + "EX.txt";
+   ifstream fileEX(strp);
+   fileEX >> EX[];
+
+   strp = base + "EY.txt";
+   ifstream fileEY(strp);
+   fileEY >> EY[];
+} // read solutions above
+
+if(mon>2) {
+   strp=    "[EX,EY]"; CF=1.0/EY[].linfty; plot([EX,EY],pvector,coef=CF,       wait=bwait); BW(2);
+   strp= "BB_[EX,EY]"; CF=1.0/EY[].linfty; plot([EX,EY],pvector,coef=CF, bb=BB,wait=bwait); BW(2);
+   strp="BBU_[EX,EY]"; CF=1.0/EY[].linfty; plot([EX,EY],pvector,coef=CF,bb=BBU,wait=bwait); BW(2);
+   strp="BBL_[EX,EY]"; CF=1.0/EY[].linfty; plot([EX,EY],pvector,coef=CF,bb=BBL,wait=bwait); BW(2);
+   strp=    "[ux,uy]"; CF=1.0/uy[].linfty; plot([ux,uy],pvector,coef=CF,       wait=bwait); BW(2);
+   strp= "BB_[ux,uy]"; CF=1.0/uy[].linfty; plot([ux,uy],pvector,coef=CF, bb=BB,wait=bwait); BW(2);
+   strp="BBU_[ux,uy]"; CF=1.0/uy[].linfty; plot([ux,uy],pvector,coef=CF,bb=BBU,wait=bwait); BW(2);
+   strp="BBL_[ux,uy]"; CF=1.0/uy[].linfty; plot([ux,uy],pvector,coef=CF,bb=BBL,wait=bwait); BW(2);
+}
+// at this point, mesh & EX,EY, ux,uy recovered from computation in "base"
+// !!+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+!!
+
+real L0 = 1e-6;		// 1 mesh unit / micron
+real ymax = (D/2.+3.);	// in mesh units
+real ylast=0, xlast=0;
+// >>> geometry
+
+
+real vy=0, Dvy=0, vtm=0, vm=0, alpha=0, Dt=0, t=0;
+real vx=0, Dvx=0;
+int flg=1;		// initiate global control variable
+
+macro vmag(vx,vy) sqrt(square(vx)+square(vy))// vector magnitude
+
+macro Ex  EX(x,y)// x component of electric field at designated point
+macro Ey  EY(x,y)// y component of electric field at designated point
+macro Ux  ux(x,y)// x component of fluid velocity field at designated point
+macro Uy  uy(x,y)// y component of fluid velocity field at designated point
+macro vtEu(Ej,uj) abs((Q*le*Ej)/(6*pi*lnu*Rp)+uj)// terminal velocity magnitude for coordinate j
+macro ctst(vt,vm) (vt-vm)/vt// measure of how close vm is to terminal velocity vt
+
+macro cadv1
+ Dvy = (Dt/Mp)*( Q*le*EY(x,y) - 6*pi*lnu*Rp*(vy - uy(x,y)) );
+ vy += Dvy;
+ Dvx = (Dt/Mp)*( Q*le*EX(x,y) - 6*pi*lnu*Rp*(vx - ux(x,y)) );
+ vx += Dvx;
+ y += (phi0/L0)*vy*Dt;
+ x += (phi0/L0)*vx*Dt;
+ vm = vmag(vx,vy);
+ Em = vmag(EX(x,y),EY(x,y));
+ um = vmag(ux(x,y),uy(x,y));
+ vtm = vtEu(Em,um);
+// calc advance in time for phase 1
+
+macro cadv2
+ y += (phi0/L0)*vy*Dt;
+ x += (phi0/L0)*vx*Dt;
+ Em = vmag(EX(x,y),EY(x,y));
+ um = vmag(ux(x,y),uy(x,y));
+ vtm = vtEu(Em,um);
+// calc advance in time for phase 2
+
+// start EOF parameters <<<
+// ---- below functions radius-to-mass and mass-to-radius assuming spherical geometry using density
+// uses SI units (kg, meters); rho is particle density in kg/m^3 (H2O is ~ 1e+3)
+
+// input radius, density; returns mass
+func real r2m(real r, real rho) { return rho*4*pi*r^3/3.0; }
+
+// input mass, density; returns radius
+func real m2r(real m, real rho) { real ff=(3.0*m)/(4*pi*rho); return exp(log(ff)/3); }
+// ---- above functions radius-to-mass and mass-to-radius assuming spherical geometry using density
+
+// +++++++++++++++++++++++++++++++++++++++++++++
+real mu2m, m2mu;
+m2mu = 1e-6;		// meters to mesh units 
+mu2m = 1.0/m2mu;	// mesh units to meters
+include "constants_PNP.idp" ; sfile=FILE;
+// +++++++++++++++++++++++++++++++++++++++++++++
+
+   real Mp, Rp;
+   Mp = kDa*1e+3*dA;			// kg, mass of spherical biomolecule, dA = kg/Dalton
+   Rp = m2r(Mp,rhop);			// m, radius of spherical biomolecule of mass kDa
+   PV(Q); PVS(Rp,"m, "); PVS(rhop,"kg/m^s density, "); PVS(Mp,"kg\n");
+   vtm = (abs(Q)*le*E0)/(6*pi*lnu*Rp);	// reference relative terminal velocity
+   alpha = 1.0/vtm;
+   PVS(alpha," inverse of reference relative terminal velocity, ");
+   real g0 = Q*le*E0/Mp;			// reference acceleration
+   PVS(g0,"m/sec^2, reference acceleration\n");
+   PVS(U0,"m/sec reference fluid velocity\n ");
+   PVS(vtm,"m/sec reference charged particle RELATIVE terminal velocity with Q, lnu, Rp\n");
+   real phi0 = 0.10;			// V, potential scale
+//  stop EOF parameters >>>
+
+int nmax=1000*1000;	// max number of iterations
+int n=0;		// iterations within a phase
+cout.precision(4);
+vtm = (Q*le*E0)/(6*pi*lnu*Rp);
+real t1o2 = Mp/(6*pi*lnu*Rp)*atanh(1.0/2);	// time to reach 1/2 of terminal velocity
+Dt = 1e-1*t1o2;		// time increment
+cout<<" ********* "; PV(vtm); PV(vtm/U0); PV(t1o2); PVn(Dt);
+	//exit(-99);
+int nm;		// monttor interval
+
+macro mon1 {cout<<"mon1 ";
+ PVW(ntotal,8); PVW(n,6); PVW(xx0-x,11); PVW(yy0-y,11); PVW(Dvy,11); PVWn(tst,11);  cout.flush; }// macro mon1; phase 1
+
+macro mon2 {cout<<"mon2 ";
+ PVW(ntotal,8); PVW(n,6); PVW(xx0-x,11); PVW(yy0-y,11); PVW(Dvy,11); PVWn(tst,11);  cout.flush; }// macro nmon2; phase 2
+
+// pore inside surface
+real M = dR/D, B = R - M*(H-D)/2.0;
+func real fy(real Y) { return M*Y+B; }  // X = fy(Y) in mesh units
+
+real delta = 1e-4*min(H,W); PVS(delta,"boundary layer around membrane\n");
+
+int ntop=0, npor=0, nbot=0;	// membrane surface avoidance counters
+int nt1=0, nt2=0, ntotal=0;	// counters (phase 1, phase 2, total iterations)
+real xx0=0, yy0=0;		// track initial coordinates
+
+int NN = NTRK;			// see tparm file
+if(NN>3) { cout << "\n +++++++++++ error, NN=" << NN << " too large\n\n"; }
+real[int][int] xp(NN), yp(NN);	// arrays to hold coordinates for NN orbits
+int[int] jmax(NN);		// array to hold number of coordinate pairs calculated
+jmax(:)=10000;			// initially set larger than anticipated actually needed
+if(NN<2) {
+   cout << "\n +++++++++++++++++++++++++++++ NN = " << NN << "\n\n";
+   //exit(-99);
+}
+
+string trkk = "";
+
+real Em=0, um=0;	// magnitude of electric and fluid flow fields at current point
+
+int k=0, j=0;	// track labels, k = which track/orbit, j = which sequential point
+while(k < NN) { // each track track loop, k = 0:NN-1 below
+// -------- inits for each track k
+   real cpu = clock();
+   x = XX[k]; y = YY[k];
+   cout << " %%%%%%%%%%%%% at start \t"; PVn(k); PVW(x,10); PVWn(y,10);
+   ntop=0; npor=0; nbot=0;	// zero membrane surface avoidance counters
+   nt1=0; nt2=0; ntotal=0;	// zero iteration counters
+   iflg=1;			// set for phase 1
+   
+   xp[k].resize(jmax[k]); yp[k].resize(jmax[k]);
+   xp[k](:) = 0; yp[k](:) = 0;
+   xx0 = XX[k];  yy0 = YY[k];
+   x = xx0;  y = yy0;
+   vx = 0;  vy = 0;	// initialize relative velocity with particle traveling with fluid
+   vm = vmag(vx,vy);	// initial relative velocity magnitude
+   cout<<endl;
+   PVS(E0,"\t"); PV(EX(xx0,yy0)/E0); PVS(EY(xx0,yy0)/E0,"initial [EX,EY]\n");
+   PVS(U0,"\t"); PV(ux(xx0,yy0)/U0); PVS(uy(xx0,yy0)/U0,"initial [vx,vy] == [0,0]\n");
+   cout<<endl; cout.flush;
+   trkk = "track" + k + ".dat";  ofstream track(trkk);	// output stream to hold sequential coordinates for k-th track
+   j=0;
+   { track << "\t" << x << "\t" << y << "\n"; xp[k][j]=x; yp[k][j]=y; j++; }	// initial point
+   cout<<"sleep 5 secs\n"; system("sleep 5");	// to glance at track initial values
+// -------- START outer track loop
+   while(1) { // outer track loop
+// -------- START phase 1, match relative velocity to terminal velocity
+      if(iflg==1) { // phase 1 below
+// -------- inits for phase 1 track k
+	 cout << " ++++++ enter phase 1\n";
+	 nt1++;
+	 n=0;
+	 bbord=false;
+	 nm = 25;		// interval between mon1 calls
+	 Dt = 1e-1*t1o2;	// phase 1
+	 cout << " Dt is " << Dt/t1o2 << " times t1o2\n";
+	 cout.precision(5);
+// -------- START phase 1 loop
+	 while(iflg==1) { // phase 1 loop
+	    // phase 1 processing
+	    ntotal++;
+   // -------- update velocity relative to fluid, coordinates
+	    cadv1;	// calculate advance of vx, vy, x, y and |v|=vm, |vt|=vtm
+ 	    tst = ctst(vtm,vm);
+	    if(abs(tst) < tol1 || n > 1000) { // phase 1 break
+	       iflg=2;
+	       PV(x); PVS(y," ******* phase 1 tst break, ");
+	       PV(n); PV(nt1); PV(vtm); PV(vm); PVn(tst);
+	       break;
+ 	    } // phase 1 break
+       // -------- not penetrate thin boundary around membrane below
+	    // top
+	    if(y>((H+D)/2.) && x>=((R+dR)-delta) && y<=((H+D)/2.+delta)) {
+	       y = ((H+D)/2.+delta);
+	       bbord=true;
+	       ntop++;
+	    } 
+	    // pore wall
+	    if(y<=((H+D)/2.+delta) && y>=((H-D)/2.-delta) && x>=(fy(y)-delta)) {
+	       x = (fy(y)-delta);
+	       bbord=true;
+	       npor++;
+	    }
+	    // bottom
+	    if(y<((H-D)/2.) && x>=(R-delta) && y>=((H-D)/2.-delta)) {
+	       y = ((H-D)/2.-delta);
+	       bbord=true;
+	       nbot++;
+	    }
+       // -------- not penetrate thin boundary around membrane above
+   // -------- velocity relative to fluid, coordinates updated; when to exit phase 1
+
+	    if(n%nm==0) { mon1; cout.flush; }
+	    if(abs(y-(H/2.0)) >= ymax) { y-=vy*Dt; iflg=3; PVS(y," ******* ymax break\n"); break; }
+	    if(ntotal>=nmax) { iflg=3; PVS(ntotal," ******* nmax break\n"); break; }
+	    if(n>=10000) { cout << "\n *** stuck in phase 1?\n\n"; exit(-99); }
+	    n++;	// number of phase 1 iterations this cycle
+
+	    // write plot data below
+ 	    if(vmag(x-xlast,y-ylast) > tolDY*DYmax) {	// write tracking data
+ 	       //track << "\t" << x << "\t" << y << "\t" << ntotal << "\t" << nt2 << " p 2\n";
+                { track << "\t" << x << "\t" << y << "\n"; xp[k][j]=x; yp[k][j]=y; j++; }
+ 	       xlast = x; ylast = y;
+ 	    }
+
+	 } // phase 1 while loop
+// -------- END phase 1 loop
+      } // phase 1 above
+      mon1;
+      if(nt1>=10000) { PV(ntotal); PV(nt1); PV(x); PV(y); PVn(nt2); exit(-99); }	// in loop?, probably something wrong
+		//exit(-99);	// TST ???, test phase 1, k=0
+
+      if(iflg==2) { // phase 2 below
+	 cout << " ++++++ enter phase 2\n";
+	 nt2++;
+	 n=0;
+	 nm = 250;
+	 cout.precision(5);
+	 Dt = 3e+3*t1o2;	// phase 2
+	 cout << " Dt is " << Dt/t1o2 << " times t1o2\n";
+	 // outside loop as vx, vy constant
+	 vm = vmag(vx,vy);	// magnitude of phase 1 relative velocity in phase 2
+	 while(iflg==2) { // phase 2 loop below
+	    ntotal++;
+	    // phase 2 processing
+   // -------- not penetrate thin boundary around membrane below
+	    // top
+	    if(y>((H+D)/2.) && x>=((R+dR)-delta) && y<=((H+D)/2.+delta)) {
+	       y = ((H+D)/2.+delta);
+	       bbord=true;
+	       ntop++;
+	    } 
+	    // pore wall
+	    if(y<=((H+D)/2.+delta) && y>=((H-D)/2.-delta) && x>=(fy(y)-delta)) {
+	       x = (fy(y)-delta);
+	       bbord=true;
+	       npor++;
+	    }
+	    // bottom
+	    if(y<((H-D)/2.) && x>=(R-delta) && y>=((H-D)/2.-delta)) {
+	       y = ((H-D)/2.-delta);
+	       bbord=true;
+	       nbot++;
+	    }
+   // -------- not penetrate thin boundary around membrane above
+	    if(abs(y-(H/2.0)) >= ymax) { y-=vy*Dt; iflg=3; PV(n); PVS(y," ******* ymax break\n"); break; }
+	    if(n%nm==0) { mon2; cout.flush; }
+	    if(ntotal>=nmax) { iflg=3; PVS(ntotal," ******* nmax break\n"); break; }
+	    if(n>=2500) { iflg=1; break; }	// limit straight lines in phase 2
+   // -------- when to exit phase 2
+	    cadv2;
+	    tst = ctst(vtm,vm);
+	    if(abs(tst) > tol2) { // phase 2 break
+	       iflg=1;
+	       PV(x); PVS(y," ******* phase 2 tst break, ");
+	       PV(n); PV(nt2); PV(vtm); PV(vm); PVn(tst);
+	       break;
+	    } // phase 2 break
+   // --------
+	    n++;
+
+	    // write plot data below
+ 	    if(vmag(x-xlast,y-ylast) > tolDY*DYmax) {	// write tracking data
+ 	       //track << "\t" << x << "\t" << y << "\t" << ntotal << "\t" << nt2 << " p 2\n";
+                { track << "\t" << x << "\t" << y << "\n"; xp[k][j]=x; yp[k][j]=y; j++; }
+ 	       xlast = x; ylast = y;
+ 	    }
+
+	 } // phase 2 loop above
+      } // phase 2 above
+      mon2;
+      if(nt2>=10000) { PV(ntotal); PV(nt1); PV(x); PV(y); PVn(nt2); exit(-99); }	// in loop? probably something wrong
+      if(iflg==3) { break; }
+   }
+// -------- END outer track loop
+
+   jmax[k] = j-1;
+   { track << "\t" << x << "\t" << y << "\n"; xp[k][j]=x; yp[k][j]=y; j++; }	// final point
+   xp[k].resize(jmax[k]);  yp[k].resize(jmax[k]); // truncate plotting arrays
+   cout << "\n ******** cpu secs this track = " << clock()-cpu << "\n\n";
+   strp= "BB_Th,[xp,yp]"; plot(Th, [xp[k],yp[k]], pvector,bb=BB, wait=1);
+
+   cout.default;
+   cout<<"\n **************** "; PV(nt1); PV(nt2); PVn(ntotal);
+
+   // ??? final processing (flg=3)
+   cout << " %%%%%%%%%%%%% at start \t"; PVn(k); PVW(XX[k],10); PVWn(YY[k],10);
+   cout << " %%%%%%%%%%%%% at finish \t"; PVW(x,10); PVWn(y,10);
+   cout << " %%%%%%%%%%%%% at finish \t"; PVn(bbord);
+   cout << " %%%%%%%%%%%%% at finish \t"; prarr(jmax); cout<<endl;
+   cout << " %%%%%%%%%%%%% base = \"" << base << "\"\n";
+   cout << " %%%%%%%%%%%%% tparm = \"" << tparm << "\"\n";
+
+   k++;	// increment track
+   if(k<NN); { cout << "\n\n"; }
+} // k-th track track loop, k = 0:NN-1 above
+
+//strp=   "Th,[xp,yp]"; plot(Th, [xp(0,:),yp(0,:)], [xp(1,:),yp(1,:)], [xp(2,:),yp(2,:)], pvector,      wait=1);
+//strp="BB_Th,[xp,yp]"; plot(Th, [xp(0,:),yp(0,:)], [xp(1,:),yp(1,:)], [xp(2,:),yp(2,:)], pvector,bb=BB,wait=1);
+
+// plot first track/orbit
+if(NN==1) {
+   strp=    "Th,[xp,yp]_first_track"; plot(Th, [xp[0],yp[0]], pvector,       wait=1);
+   strp= "BB_Th,[xp,yp]_first_track"; plot(Th, [xp[0],yp[0]], pvector,bb=BB, wait=1);
+   strp="BBL_Th,[xp,yp]_first_track"; plot(Th, [xp[0],yp[0]], pvector,bb=BBL,wait=1);
+}
+// plot 1st 2 tracks
+if(NN==2) {
+   strp=    "Th,[xp,yp]_2_tracks"; plot(Th, [xp[0],yp[0]], [xp[1],yp[1]], pvector,       wait=1);
+   strp= "BB_Th,[xp,yp]_2_tracks"; plot(Th, [xp[0],yp[0]], [xp[1],yp[1]], pvector,bb=BB, wait=1);
+   strp="BBL_Th,[xp,yp]_2_tracks"; plot(Th, [xp[0],yp[0]], [xp[1],yp[1]], pvector,bb=BBL,wait=1);
+}
+// plot 3 tracks (max)
+if(NN==3) {
+   strp=    "Th,[xp,yp]_3_tracks"; plot(Th, [xp[0],yp[0]], [xp[1],yp[1]], [xp[2],yp[2]], pvector,       wait=1);
+   strp= "BB_Th,[xp,yp]_3_tracks"; plot(Th, [xp[0],yp[0]], [xp[1],yp[1]], [xp[2],yp[2]], pvector,bb=BB, wait=1);
+   strp="BBL_Th,[xp,yp]_3_tracks"; plot(Th, [xp[0],yp[0]], [xp[1],yp[1]], [xp[2],yp[2]], pvector,bb=BBL,wait=1);
+}
+if(NN>3) { cout << "\n +++++++++++ error, NN=" << NN << " too large\n\n"; }
+
+// gnuplot code
+	cout.flush;
+	real LL = (H-D)/2.0;
+	PV(W); PV(H); PV(D); PVS(LL,"(H-D)/2; "); PV(R); PVn(dR);
+	// make pore outline
+	// fluid boundary
+	real[int] FX = [0, W,  W,  R, R+dR,     W, W, 0, 0],
+	          FY = [0, 0, LL, LL, LL+D,  LL+D, H, H, 0];
+
+	{ // block containing 'gnu'
+	   strp="outline";
+	   ofstream gnu(strp+".dat");
+	   for(int j=0; j<FX.n; j++) { gnu << "  " << FX[j] << "     \t" << FY[j] << endl; }
+	} // 'gnu' closed at block end
+
+// save parameters
+{
+   ofstream parms("parms.dat");
+   parms << " string base;  real Q, E0, L0, W, H, R, dR, D\n";
+   parms << " " << base << endl;
+   parms << " " << Q << endl;
+   parms << " " << E0 << endl;
+   parms << " " << L0 << endl;
+   parms << " " << W << endl;
+   parms << " " << H << endl;
+   parms << " " << R << endl;
+   parms << " " << dR << endl;
+   parms << " " << D << endl;
+}
+
+/*@ TMP ??? comment out below *@/
+/@* TMP ??? comment out above @*/
+cout << "\n END\n\n";
+

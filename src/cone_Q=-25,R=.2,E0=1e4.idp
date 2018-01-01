@@ -1,0 +1,41 @@
+// file: "cone_Q=-25,R=.2,E0=1e4.idp"
+
+// if stand alone below
+//!! cout << " ******** \"cone_Q=-25.idp\" stand-alone\n";
+//!! int mon=3;
+//!! string sfile = FILE;
+//!! include "util3.idp" ; sfile=FILE;
+//!! real W=20, H=W, R=2, D=8, dR=0;	// TST ??? cylindrical test
+// if stand alone above
+
+if(mon>0) { cout << "\n enter \"" << FILE << "\"\n"; cout.flush; }
+sfile = FILE;
+
+// N.B. E0 from geo.dat was set in sim_PNP_N-S.edp via, e.g. parms_cone_R=0.1,E0=1e4.idp
+real Q = -25.0, kDa = 150.0;
+real XX0 = 1.00*(R+dR)+0.5, YY0 = (H+D)/2.0 + 0.5;
+real DYmax = D/2. + (1/2.)*(H-D)/2;
+PV(DYmax); PV(D/2); PVn(H/2);
+if(DYmax<(D/2) || DYmax>(H/2)) { cout << " DYmax error\n"; exit(-99); }
+
+int NTRK=3;
+real[int] XX(NTRK), YY(NTRK);
+{
+   //real DX = 1.0; DX /= (NTRK-1.0);
+   real DX = 1.2; DX /= (NTRK-1.0);
+   real DY = 0.25/(NTRK-1);
+   for(int j=0; j<NTRK; j++) {
+      XX[j] = XX0 - j*DX;
+      YY[j] = YY0 + j*DY;
+   }
+}
+
+cout << " *** trajectory parameters\n";
+PV(Q); PVn(kDa);
+PV(R+dR); PVn((H+D)/2.0);
+prarr(XX); prarr(YY);
+	//exit(-99);	// TST ???
+
+if(mon>0) { cout << "  exit \"" << FILE << "\"\n\n"; cout.flush; }
+	//exit(-99);	// TST ???, check what this file sets
+

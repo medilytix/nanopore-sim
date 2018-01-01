@@ -1,0 +1,37 @@
+// file: "read_geo.idp"
+// obtain mesh parameters using "geo.dat"
+if(mon>0) { cout << "\n enter \"" << FILE << "\"\n"; cout.flush; }
+
+string gdat = base + "geo.dat" ;
+real W, H, R, D;
+int S;
+bool bslant, badapt, bcrg;
+real E0;
+ifstream inpf(gdat);
+
+{
+   string istr;
+   getline(inpf,istr);
+   inpf >> W;
+   inpf >> H;
+   inpf >> R;
+   inpf >> D;
+   inpf >> S;
+   inpf >> bslant;
+   inpf >> badapt;
+   inpf >> bcrg;
+   inpf >> E0;
+   cout << istr << endl;
+   PV(W); PV(H); PV(R); PV(D); PVn(S);
+   PV(bslant); PV(badapt); PV(bcrg); PVn(E0);
+   smsh = base + "U-flow_E-field_mesh,bslant="+bslant+",S="+S+",badapt="+badapt;
+   if(mon>2) { cout << " smsh = [" << smsh << "]\n"; }
+   int[int] labs(2);
+   if(bcrg) { smsh = smsh+",labs=lmbrn"; }
+   else         { smsh = smsh+",labs=lslant"; }
+   smsh = smsh+".msh";
+   string tmp = "ls -l " + smsh;
+   system(tmp);
+}
+
+if(mon>0) { cout << "  exit \"" << FILE << "\"\n\n"; cout.flush; }

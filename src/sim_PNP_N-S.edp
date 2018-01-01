@@ -1,0 +1,1086 @@
+// file: "sim_PNP_N-S.edp"
+
+// -<>-<>-<>-<>-<>-<>-<>-<>- "sim_PNP_N-S.edp"
+verbosity=0;
+int mon=0;	// like verbosoty for ff++
+if(mon>0) { cout << "\n enter \"" << FILE << "\"\n"; }
+/*
+ * simulation scenario
+ * N.B.	- numerical computations done using FreeFem++ from F. Hecht et al at UPMC
+ * 	- for this non-linear problem, the basic technique is to use physics
+ * 	  considerations to initialize Newton loops to solve each of two coupled
+ * 	  (Navier-Stokes, Poisson-Nernst-Planck) sets of discretized and scaled
+ * 	  PDEs. Then alternate solutions until the scaled variables are consistent 
+ * 	- S-B stands for Squires-Bazant from their pioneer paper and all variable
+ *	  fields are scaled similarly to what done in this paper
+ * 	- sigma = -6.91e-12 C/m^2 from equivalent zeta computation as using the
+ *	  experimental zeta potential overestimates the potential near charged
+ *	  surfaces with features changing at and below the micron scale
+
+ * ********* initialze phi = electrostatic potential and [ux,uy] fluid velocity prior
+ * 	  to entering outer compute loop using only permittivity and vertical boundary
+ * 	  fixed potentials
+ *   - compute S-B scaled version of potential with sigma = -6.91e-12 C/m^2 and with
+ * 	 n+ = n- = n0 so completely unscreened interface charge
+ *   - initialize flow [ux,uy] in ThF = -1 parallel (S-B scaling) on slanted pore surface
+ * 	 of width less than pore radius but outside interface by a small amount
+ * 	 proportional and equal to or less than the minimum node separation
+
+ * ********* enter outer compute loop
+ *   - using Hecht's ExtractDofsonBorder.idp on [ux,uy], zero [ux,uy] on all solid surfaces
+ * 	(for 1st outer loop iteration, already null)
+ *   - using ExtractDofsonBorder.idp on [Ex,Ey] and varf/on technique, force [ux,uy] on
+ * 	all solid interfaces to have magnitude lmu*[Ex,Ey]'*[Tau.x,Tau.y] where lmu
+ * 	is KCl average mobility, Tau is parallel to surface, and [Ex,Ey] from last
+ * 	potential update
+ *   - using the Newton steady Oseen ansatz, compute an updated [ux,uy]
+ *   - using a Poisson-Nernst-Plank PDE, solve for the electrostatic potential and the
+ * 	ion densities, update these three fields keeping [ux,uy] constant on the
+ * 	solid surfaces
+ *   - if the difference between the previous and updated potential, flow velocity, and
+ * 	 ion densities is greater than some small value, go to beginning of outer loop;
+ * 	 else exit outer compute loop
+
+ * ********* finalize
+ *   - display results and clean up
+ */
+ 
+// Author (original): F. Hecht             JRS extensive modifications Jan 2012
+
+// Stationary imcompressible Navier Stokes-Equation with Newton method around a 2d Cylinder
+// using Oseen's algorithm which linearizes the Navier-Stokes to account for inertial forces
+// where they are important and ignores them elsewhere.
+
+// JRS mods Oct-Nov 2016 to try to solve Poisson-Nernst-Planck equation in inverted cone
+// geometry similar to ../examples++-chapt3/NSNewton.edp holding flow fixed from an Oseen
+// solution and electrostatic potential found but initialized from a Poisson solution.
+
+// This program (originally "steady_axi_cone_pore2.edp") starts from reasonable flow and
+// potential fields in and inverted cone geometry and generates ion densities and a revised
+// electrostatic potential that match physical expectations.  Slightly modified
+// Squires-Bazant scaling is used.  The initial flow is a Navier-Stokes solution with
+// constant flow at the charge interface. The electrostatic potential is a Poisson solution
+// with the zeta-equivalent surface charge. The result after Poisson-Nernst-Plank solution,
+// based on Professor Hecht's original ansatz, yield's ion densities that are essentially
+// equal everywhere except near the charge surface. Going outward from this surface, the
+// charge density (n+ - n-) is initially positive and rapidly decreases exponentially going
+// slightly negative, then slightly positive before becoming zero. This is the expected double
+// layer. The electrostatic potential is only slightly changed from the initial input, also
+// as expected. Since this initial solve should be the most difficult in the "ping-pong"
+// alteration with a Navier-Stokes solution taking into account the updated electrostatic
+// potential, the hope is that a consistent solution for the ion densities, potential, and
+// flow (and pressure) will be straight-forward.
+
+real cput=clock(), cpuOi, cpuO, cpuPNPi, cpuPNP;
+
+string sfile = FILE;
+int monold=mon, ie=0, line;
+real tst=0;	// for temp use examining pearts of calculations, often overwritten
+
+// -<>-<>-<>-<>-<>-<>-<>-<>- insert utilty macros
+// *********** "util.idp"
+include "util.idp" ; sfile=FILE;		// utilities, mainly printing
+// *********** "util.idp"
+
+// *********** "color_plot.idp"
+include "color_plot.idp" ; sfile=FILE;	// restricted, darker color scale
+// *********** "color_plot.idp"
+
+// -<>-<>-<>-<>-<>-<>-<>-<>- color_plot.idp globals
+int NBISO=10, NBARROW=10;
+real[int] VISO(NBISO+1), SVIS(NBISO+1), VARROW(NBARROW+1), SVARR(NBARROW+1);
+
+// *********** "parms_cone_R=0.1,E0=1e4.idp"; sets geometry dimensions & bools, E0 
+include "parms_cone_R=0.1,E0=1e4.idp" ; sfile=FILE;
+// *********** "parms_cone_R=0.1,E0=1e4.idp"
+//## include "parms_cyld_R=2.0,E0=1e4.idp" ; sfile=FILE;
+//## include "parms_cone_R=0.2,E0=2e4.idp" ; sfile=FILE;
+
+mesh Th;
+string sBW;	// string for BW macro
+macro BW(t) if(!bwait) { sBW="sleep "+t; system(sBW); }//
+
+string sdat = "save.txt" ;	// saved plain text output
+ofstream savf(sdat);		// load via 'savf << ....'
+real Eave=0, Uave=0;
+
+// -<>-<>-<>-<>-<>-<>-<>-<>- setup geometry
+// *********** "geo_axi_pore.idp", axisymmetric pore geometry
+include "geo_axi_pore.idp" ; sfile=FILE;
+// *********** "geo_axi_pore.idp"
+
+// for use by downstream programs (e.g. orbit tracking) needing to know mesh geometry dimensions
+string gdat = "geo.dat" ;
+
+{
+   ofstream outf(gdat);
+   outf << " *** parameters 1 per line are: real W, H, R, D; int S; bool bslant, badapt, bcrg, E0\n";
+   outf << W << endl;
+   outf << H << endl;
+   outf << R << endl;
+   outf << D << endl;
+   outf << S << endl;
+   outf << bslant << endl;
+   outf << badapt << endl;
+   outf << bcrg << endl;
+   outf << E0 << endl;
+}
+
+// labels
+int[int] lVtop = [16,17];		// top EOF electrode
+int[int] lVbot = [11,12];		// bottom EOF electrode
+int[int] lmbrn = [21,22,23];		// silicon membrane containing pore on y-axis
+int[int] lslant = [22];			// pore wall, slanted if theta != 0
+int[int] lnos = [lVbot,lmbrn,lVtop];	// no slip, impenetrable surfaces
+int[int] laxis = [19];			// axisymmetric rotation axis
+int[int] linp = [18];			// fluid input
+int[int] lout = [10];			// fluid output
+int[int] lGauss(10:18);			// for enclosed charge determination
+int rfluid = Th(1e-3,H/2).region;	// electrolyte fluid
+int rsolid = Th(W-1e-3,H/2).region;	// solid membrane region forming pore
+
+// labs = label(s) for ExtractDofsonBorder 
+int[int] labs, lsig;
+if(bcrg) {
+   lsig.resize(lmbrn.n); lsig = lmbrn;	 // EOF on all of membrane no-slip surfaces
+} else {
+   lsig.resize(lslant.n); lsig = lslant; // EOF only on slanted membrane no-slip surface
+}
+labs.resize(lsig.n);  labs = lsig;
+PV(bcrg); prarrS(lslant,", "); prarrS(lmbrn,"\n");
+prarrS(lsig,"\n"); if(mon>2) prarr(labs);
+
+mesh ThF = trunc(Th,region==rfluid);	// fluid region
+mesh ThS = trunc(Th,region==rsolid);	// solid pore membrane region
+
+if(mon>1) {	// plot ThS, ThF
+   plot(ThS,cmm="ThS",wait=bwait); BW(1);
+   plot(ThF,cmm="ThF",wait=bwait); BW(1);
+}
+PVn(Th.hmin);
+
+// expanded views, funcs BBx used in plot statements plot(...,bb=BBx,...)
+real DD = max(D/10,dR/3);
+if(mon>1) { PVn(DD); }	// expanded view scale
+real XU = R+dR, YU = (H+D)/2;
+func BBU = [[XU-DD,YU-1.3*DD],[XU+DD,YU+0.7*DD]];
+real XL = R, YL = (H-D)/2;
+func BBL = [[XL-3*DD,YL-4*DD],[XL+DD,YL+12*DD]];
+real XUL = 0, YUL = H;
+func BBUL = [[XUL+0,YUL-.9*DD],[XUL+0,YUL+0.1*DD]];
+real XLL = 0, YLL = 0;
+func BBLL = [[XLL+0,YLL-.1*DD],[XLL+0,YLL+0.9*DD]];
+real XM=R+dR/2, YM=H/2;
+func BBM = [[max(0.,XM-16*DD),YM-0.8*D],[XM+3*DD,YM+0.8*D]];
+func BB = [[R/4,(H-D)/2-1],[R+dR+0.5,(H+D)/2+1]];
+
+// remote conductor region
+real DDD = rw;
+func BBUR = [[W-rw-DDD,H-DDD],[W+0.1,H+0.1]];
+func BBLR = [[W-rw-DDD,-0.1],[W+0.1,DDD]];
+// even larger
+DD /= 20;
+real XMX=R+dR/2, YMX=H/2;
+func BBMX = [[XMX-DD,YMX-DD],[XMX+DD,YMX+DD]];
+func BBTST = [[R,(H-D)/2-min(2.,4.*R)],[3*R,(H-D)/2+min(2.,4.*R)]];
+
+if(mon>1) {	// plot Th	
+   strp="Th,hmin="+Th.hmin;
+   if(badapt) { plot(Th,cmm=strp,bb=BBMX,wait=bwait); BW(2); }
+   else       { plot(Th,cmm=strp,bb=BBM, wait=bwait); BW(2); }
+}
+
+// -<>-<>-<>-<>-<>-<>-<>-<>- setup finite element spaces & N.x,N.y on border dofs
+// setup [N.x,N.y] border info arrays
+fespace Nh(Th,P0edge);
+
+Nh N1, N2;
+varf vN1(U,N1) = int1d(Th)(N.x*N1/lenEdge);
+N1[]= vN1(0,Nh);
+
+varf vN2(U,N2) = int1d(Th)(N.y*N2/lenEdge);
+N2[]= vN2(0,Nh);
+
+if(mon>2) { plot([N1,N2],value=1,wait=bwait); BW(2); }	// plot [N1,N2] normal vector P0edge
+
+// *********** "ExtractDofsonBorder.idp"
+include "ExtractDofsonBorder.idp" ; sfile=FILE;
+// *********** "ExtractDofsonBorder.idp"
+
+fespace Vh2(Th,P2), Vh2dc(Th,P2dc);
+fespace Wh(Th,P2);	// identical to fespace for Ex, Ey
+int[int] doflabs(1);
+int orient = +1;	// clockwise as in mesh setup
+
+// save the mesh as a file
+string smsh = "U-flow_E-field_mesh,bslant="+bslant+",S="+S+",badapt="+badapt;
+if(labs.n>1) { smsh = smsh+",labs=lmbrn"; }
+else         { smsh = smsh+",labs=lslant"; }
+cout << " write \"" << smsh << ".msh\"\n";
+savemesh(Th,smsh+".msh");
+
+ExtractDofsonBorder(labs,Wh,doflabs,orient);
+
+if(mon>2) {	// dof index along border specified by 'labs' (all solid surfaces or just slanted pore face)
+   cout << "\n doflabs along border 'labs' = ";
+   prarrS(labs,"");
+   cout  << " are:\n";
+   cout << " doflabs, n= " << doflabs << endl;
+}
+
+real[int] Nx(doflabs.n), Ny(doflabs.n);	// nornal components at each border dof
+Vh2 Xdof=x, Ydof=y;
+real[int] xdof(doflabs.n),  ydof(doflabs.n);
+xdof=Xdof[](doflabs);  ydof=Ydof[](doflabs);	// arrays with x,y coordinates of charged border dofs
+
+if(mon>2) {	// (x,y) & (N1,N2) normal components along 'labs'
+  for(int j=0; j<doflabs.n; j++) {
+     if(j==0) { cout << setw(17)<<"(x,y)" << setw(34)<<"(N1,N2)\n"; }
+     x = xdof[j]; y = ydof[j];
+     cout << " (" << setw(12)<<x << "," << setw(12)<<y << ")  :  ("
+          << setw(12)<<N1(x,y) << "," << setw(12)<<N2(x,y) << endl;
+  }
+  cout.flush;
+}
+
+  for(int j=0; j<doflabs.n; j++) { // calc parallel entities
+     int k = doflabs[j];
+     x = xdof[j];  y = ydof[j];
+     Nx[j] = N1(x,y); Ny[j] = N2(x,y);
+     // next 3 'if's empirically interpolate to handle discontinuities in normal
+     if(j==0) { // use next
+        x=xdof[j+1]; y=ydof[j+1]; Nx[j]=N1(x,y); Ny[j]=N2(x,y);
+     } else if(j==doflabs.n-1) {       // use prior
+        x=xdof[j-1]; y=ydof[j-1]; Nx[j]=N1(x,y); Ny[j]=N2(x,y);
+     } else if(j!=0 &&j!=doflabs.n-1 && (Nx[j]==0 && Ny[j]==0)) {	// average nearest neighbors
+        x=xdof[j-1]; y=ydof[j-1]; Nx[j]=N1(x,y); Ny[j]=N2(x,y);
+        x=xdof[j+1]; y=ydof[j+1]; Nx[j]+=N1(x,y); Ny[j]+=N2(x,y); Nx[j]/=2; Ny[j]/=2;
+     }
+  } // calc parallel entities
+
+// -<>-<>-<>-<>-<>-<>-<>-<>- setup physics constants
+// *********** "constants_PNP.idp"
+include "constants_PNP.idp" ; sfile=FILE;	// E0 put in earlier include file
+// *********** "constants_PNP.idp"
+
+real dvi;
+dvi = abs(zeta)/NBISO;
+//PVn(dvi);
+//cout << " VISO zeta\n";
+for (int i=0;i<VISO.n;i++) {
+   VISO[i] = -0.1 + i*dvi;
+   //cout << i << "\t" << VISO[i] << endl;
+}
+
+// characteristic scales
+U0 = lmu*E0;
+real L0 = 1e-6;	// N.B. same as m2mu
+m2mu = L0; mu2m = 1./m2mu;
+real Pe = U0*L0/lD;
+real Re = rhof*U0*L0/lnu;
+real PP0 = lD*rhof*U0/L0;	// pressure scale
+real phi0 = abs(zeta);
+real chiv = 2*n0*psi*le*phi0/PP0;	// volume grad phi coef, see ../pdf_docs/ScaledPNP+N-Sequations.pdf
+sigma = -6.91e-12;	// C/m^2, ../FreeFEM++/PNP+NScalc2017/tmp_Jan/eps_sigma_Gauss_9.edp  170129 morn
+real chis = sigma*phi0/(PP0*L0^2);	// surface grad phi coef, this needs to use sigma -> sigma/L0^2 170330
+if(mon>0) {	// various mesh & physics constants
+   PV(m2mu); PV(L0); PV(E0); PV(n0); PV(phi0); PVn(psi);
+   PV(U0); PV(Pe); PV(Re); PVn(Pe/Re); PV(PP0); PVS(Re/Pe," is nu final\n");
+   PV(sigma); PV(chiv); PVn(chis);
+}
+
+// -<>-<>-<>-<>-<>-<>-<>-<>- initialize fluid flow near pore (not border)
+fespace Vh1(Th,P1), Vh1dc(Th,P1dc),  VhF1(ThF,P1), VhF2(ThF,P2),   VhF1dc(ThF,P1dc), VhF2dc(ThF,P2dc);
+VhF1 PP,QQ, dPP, PPold=0;
+VhF2 ux,uy, V1,V2, dux,duy, uxp,uyp;
+VhF2 umag;
+
+   // for initializing flow near slanted region
+   real dxdy = dR/D;
+   real A = R-dxdy*L;
+   func fx = dxdy*y + A;	// eqn of slanted interface border
+   real dfx = 0.3*Th.hmin;
+   real xdwidth = R/3, ydheight = D/5;
+   func fxy = ((y>=(L-ydheight)) && y<=(L+D+ydheight) && (x<=(fx-dfx) && x>=(fx-xdwidth)));	// pore region near border
+
+real Llslant = int1d(Th,lslant)(1.0);
+real CF=0;
+
+   // band just outside interface
+   // set to scaled mu_e*E0
+   ux = -(U0/phi0)*dR/Llslant*fxy;	// -U0 is scaled flow magnitude downward, correction from -1 to -U0 170419
+   uy = -(U0/phi0)*D/Llslant*fxy;	// -U0 is scaled flow magnitude downward, correction from -1 to -U0 170419 
+
+if(mon>1) {	// initial, scaled [ux,uy] band near pore wall (but not yet on surface)
+   CF=phi0/not0(U0);
+   strp=     "[ux,uy]_initial_band"; plot([ux,uy],pvector,coef=CF,        wait=bwait); BW(1);
+   strp="BBMX_[ux,uy]_initial_band"; plot([ux,uy],pvector,coef=CF,bb=BBMX,wait=bwait); BW(1);
+   strp= "BBL_[ux,uy]_initial_band"; plot([ux,uy],pvector,coef=CF,bb=BBL, wait=bwait); BW(1);
+}
+
+Vh2 phi;
+//Vh2dc Ex, Ey, E;	// electric field values total computational volume
+//Vh2dc EX, EY, EE;	// electric field values only in fluid region
+// N.B. -- 170603, not use Vh2dc so values on Si can be nonzero
+Vh2 Ex, Ey, E;	// electric field values total computational volume
+Vh2 EX, EY, EE;	// electric field values only in fluid region
+
+// --------- border parallel macros ---------, see $MD/set_parallel_border_values.edp 170226
+// Tx,Ty tangential components at border, see ../border_parallel.pdf 170306
+// support for calculating electric field parallel to fluid/solid interfaces
+macro Vll(Vx,Vy,Ny,Nx) ((Vx)*(-Ny) + (Vy)*( Nx))//magnitude of vector V, components Vx,Vy, along tangent [-Ny,Nx]
+macro Vllx(Vx,Vy,Ny,Nx) (Vll(Vx,Vy,Ny,Nx)*(-Ny))//	x component of magnitude of V parallel to border
+macro Vlly(Vx,Vy,Ny,Nx) (Vll(Vx,Vy,Ny,Nx)*( Nx))//	y component of magnitude of V parallel to border
+
+// set ux and uy on charged pore side, only correct for labs = lsig = slanted part of interface
+// see $FF/EOFbkgnd/Ell_charged_surface.pdf for algo relating [N.x,N.y] and [Ex,Ey] to surface parallel field
+
+// -<>-<>-<>-<>-<>-<>-<>-<>- solve for unscaled electrostatic potential
+//Vh2dc Exu, Eyu, Eu;
+// 170603 so border values correct
+Vh2 Exu, Eyu, Eu;
+real Vtop = E0*H*L0, Vbot = 0;	// makes bulk external field E0
+Vh2 phiu=0;	// unscaled electrostatic potential
+Vh2 dphi, tphi;	// electrostatic potential differential, test function
+// -------------------------------------------------------------------------------
+// for PNP solve, all quantities must be in total/complete domain like phi
+Vh1dc Eps=eps0*epsrH2O*(region==rfluid) + eps0*epsrSi*(region==rsolid);
+if(mon>1) {	// permittivities ThF & ThS, initial scaled ion density (n+ = n- = n0)
+   PV(eps0*epsrH2O); PV(eps0*epsrSi); PVn(1./(2*psi));
+   strp="BBM_Eps"; plot(Eps,pscalar,bb=BBM,wait=bwait); BW(2);
+}
+
+// solve for unscaled potential below +++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ // solve for unscaled potential defined only by top/bottom fixed potentials and permittivities
+macro grad(u)  [dx(u),dy(u)] // 2D gradient of u
+
+ solve Punscaled(phiu,tphi) =
+     int2d(Th,rfluid) ( 2*pi*x * eps0*epsrH2O * grad(phiu)'*grad(tphi) )
+   + int2d(Th,rsolid) ( 2*pi*x * eps0*epsrSi * grad(phiu)'*grad(tphi) )
+   + on(linp,lVtop,phiu=Vtop)		// uniform top potential to give external field E0
+   + on(lout,lVbot,phiu=Vbot)		// uniform bottom potential to give external field E0
+ ;
+
+if(mon>2) { // unscaled phi
+   strp=    "phiS-B_unscaled"; plot(phiu,pscalar,       wait=bwait); BW(1);
+   strp="BBM_phiS-B_unscaled"; plot(phiu,pscalar,bb=BBM,wait=bwait); BW(2);
+   strp= "BB_phiS-B_unscaled"; plot(phiu,pscalar,bb=BB, wait=bwait); BW(2);
+}
+
+// sim paper figs
+strp= "BBM_phi"; plot(phiu,pscalar,bb=BBM, wait=bwait); BW(2);
+strp= "BBL_phi"; plot(phiu,pscalar,bb=BBL, wait=bwait); BW(2);
+
+real dva;
+dva = 5.0/(SVARR.n-1);	// skeleton VARROW
+for (int i=0;i<SVARR.n;i++) {
+   SVARR[i] = i*dva;
+   if(i==SVARR.n-2) SVARR[i] = 10*i*dva;
+   if(i==SVARR.n-1) SVARR[i] = 20*i*dva;
+   SVIS[i] = SVARR[i];
+   //cout << i << "\t" << SVARR[i] << endl;
+}
+//prarr(SVARR); exit(-99);
+
+
+Exu = -dx(phiu)/L0;  Eyu = -dy(phiu)/L0;	// convert V/(mesh unit) to V/(meter)
+Eu = sqrt(square(Exu)+square(Eyu));
+sp = " Unscaled ave E along membrane surface";
+Eave = int1d(Th,lslant)([Exu,Eyu]'*[-N.y,N.x])/Llslant; PVS(Eave,sp+"\n");
+	Eave = int1d(Th,laxis)([Exu,Eyu]'*[-N.y,N.x])/H;
+	cout << " !!!!!!!! int1d(Th,laxis)([Exu,Eyu]'*[-N.y,N.x])/H = " << Eave
+	     << " =? E0 (" << E0 << ")\n";
+
+real tfac=0;	// factor multiplying tst in VARROW definitions
+//cout << " tst = " << tst << ", tfac = " << tfac << endl;
+savf << " R = " << R << "\n";
+savf << " E0 = " << E0 << "\n";
+savf << " Th.hmin = " << Th.hmin << "\n";
+savf << sp+" = "  << Eave << "\n";
+
+CF=0.1/not0(Eu[].linfty);
+if(mon>1) {	// unscaled electric field
+   tst = f5(Eu(R+dR/2,H/2));       // 3 sig figs & divisible by 5
+   tfac = 0.5;        // factor multiplying test in VARROW definitions
+   VARROW = tfac*tst*SVARR; VISO = VARROW;
+   strp=     "unscaled_[Exu,Eyu]"; plot([Exu,Eyu],pvector,        coef=CF,wait=bwait); BW(2);
+   strp="BBMX_unscaled_[Exu,Eyu]"; plot([Exu,Eyu],pvector,bb=BBMX,coef=CF,wait=bwait); BW(2);
+   sp=     "unscaled,hsv_[Exu,Eyu]"; plot([Exu,Eyu],pltv       );  BW(2);
+   sp="BBMX_unscaled,hsv_[Exu,Eyu]"; plot([Exu,Eyu],pltv,bb=BBMX); BW(2);
+   sp= "BBM_unscaled,hsv_[Exu,Eyu]"; plot([Exu,Eyu],pltv,bb=BBM);  BW(2);
+   sp= "BBL_unscaled,hsv_[Exu,Eyu]"; plot([Exu,Eyu],pltv,bb=BBL);  BW(2);
+   sp=  "BB_unscaled,hsv_[Exu,Eyu]"; plot([Exu,Eyu],pltv,bb=BB);   BW(2);
+}
+
+if(mon>2) { // observe unscaled field along border, see ../FreeFEM++/EOFbkgnd/Ell_charged_surface.pdf
+   cout.flush;
+   cout << "\n observe unscaled field along charged border, label=lsig\n";
+   for(int j=0; j<doflabs.n; j++) {
+      if(j%10==0 || j==doflabs.n-1) { // every 10th Ex,Ey on charged surface
+         int k = doflabs[j];
+         real Ebx = Exu[][k], Eby = Eyu[][k];	// E-field border components
+         real Tx = -Ny[j], Ty = Nx[j];		// tangent border components
+         real Ell = Ebx*Tx + Eby*Ty;		// E-field parallel to border
+         PVW(j,4); PVW(Exu[][k],10); PVW(Eyu[][k],10); PVWn(Ell,10);
+      }
+   } // for(int j=0; ...
+   cout << "\n"; cout.flush;
+} // observe unscaled field along border
+// solve for unscaled potential above +++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+// -<>-<>-<>-<>-<>-<>-<>-<>- solve for scaled electrostatic potential
+real delta=lambdaD/L0, deltasq=delta^2;
+real gamma = epsrSi/epsrH2O;
+
+if(mon>2) {	// check many physics parameters
+   cout << "\n param check\n";
+   PV(sigma); PV(H); PV(L0); PVn(lambdaD);
+   PV(epsrH2O); PV(epsrSi); PV(psi); PVn(n0);
+   PV(phi0); PV(U0); PV(rfluid); PVn(rsolid);
+   prarr(linp); prarr(lVtop); prarr(lout); prarr(lVbot);
+   prarr(lsig); prarr(lslant); prarr(lnos);
+   PV(delta); PV(deltasq); PVn(gamma);
+   cout << endl;
+   //exit(-88);
+}
+
+real ipnorm, innorm; ipnorm = innorm = 1/(2*psi);
+Vh2 ip=ipnorm*(region==rfluid),tip, dip, ipold=0;  // ion positive concentration related (must be in both fluid & solid w/phi)
+Vh2 in=innorm*(region==rfluid),tin, din, inold=0;  // ion negative concentration related (must be in both fluid & solid w/phi)
+VhF2 ipv=ip, inv=in;
+Vh2 phiold=0;
+if(mon>2) {	// initial scaled positive ion density
+   strp="BBM_ip_initial"; plot(ip,pscalar,bb=BBM,wait=bwait); BW(2);
+}
+
+Vh2 phis=0;	// scaled electrostatic potential
+
+ // solve for scaled potential defined only by top/bottom fixed potentials and permittivities
+ solve Pscaled(phis,tphi) =
+     int2d(Th,rfluid) ( 2*pi*x * deltasq * grad(phis)'*grad(tphi) )
+   + int2d(Th,rsolid) ( 2*pi*x * deltasq*gamma * grad(phis)'*grad(tphi) )
+   + on(linp,lVtop,phis=Vtop/phi0)		// uniform top potential to give external field E0
+   + on(lout,lVbot,phis=Vbot/phi0)		// uniform bottom potential to give external field E0
+ ;
+
+if(mon>1) { // scaled phi, electrostatic potential
+   strp="phiS-B_scaled"; plot(phis,pscalar,wait=bwait); BW(1);
+   strp="BBM_phiS-B_scaled"; plot(phis,pscalar,bb=BBM,wait=bwait); BW(2);
+}
+
+//Vh2dc Exs, Eys, Es;
+Vh2 Exs, Eys, Es;
+Exs = -dx(phis)/L0;  Eys = -dy(phis)/L0;	// phi0/L0 to recover unscaled value
+	Eave = int1d(Th,laxis)([Exs,Eys]'*[-N.y,N.x])/H;
+	cout << " !!!!!!!! int1d(Th,laxis)([Exs,Eys]'*[-N.y,N.x])/H = " << Eave
+	     << " =? E0/phi0 (" << E0/phi0 << ")\n";
+Es = sqrt(square(Exs)+square(Eys));
+
+//VARROW = (E0/phi0)*SVARR; VISO = VARROW;
+tst = f5(Es(R+dR/2,H/2));
+//cout << " tst = " << tst << endl;
+VARROW = tfac*tst*SVARR; VISO = VARROW;
+
+Eave = int1d(Th,lslant)(Es)/Llslant; PVS(Eave,"Scaled average E along pore inner surface\n");
+CF=0.1/not0(Es[].linfty);
+if(mon>1) {	// expanded view, scaled electric field
+   tst = f5(Es(R+dR/2,H/2));       // 3 sig figs & divisible by 5
+   tfac = 0.5;        // factor multiplying test in VARROW definitions
+   VARROW = tfac*tst*SVARR; VISO = VARROW;
+   strp=    "scaled_[Exs,Eys]"; plot([Exs,Eys],pvector,       coef=CF,wait=bwait); BW(2);
+   strp="BBM_scaled_[Exs,Eys]"; plot([Exs,Eys],pvector,bb=BBM,coef=CF,wait=bwait); BW(2);
+   sp=       "scaled_[Exs,Eys],hsv"; plot([Exs,Eys],pltv        ); BW(2);
+   sp=   "BBM_scaled_[Exs,Eys],hsv"; plot([Exs,Eys],pltv,bb=BBM ); BW(2);
+   sp=  "BBMX_scaled_[Exs,Eys],hsv"; plot([Exs,Eys],pltv,bb=BBMX); BW(2);
+} // expanded view, scaled electric field
+
+if(mon>2) { // observe scaled field along border
+   cout.flush;
+   cout << "\n *** scaled field along charged border\n";
+   for(int j=0; j<doflabs.n; j++) {
+      if(j%10==0 || j==doflabs.n-1) { // every 10th border dof
+         int k = doflabs[j];
+         real Ebx = Exs[][k], Eby = Eys[][k];	// E-field border components
+         real Tx = -Ny[j], Ty = Nx[j];		// tangent border components
+         real Ell = Ebx*Tx + Eby*Ty;		// E-field parallel to border
+         PVW(j,4); PVW(Exs[][k],10); PVW(Eys[][k],10); PVWn(Ell,10);
+      }
+   } // for(int j=0; ...
+   cout << "\n"; cout.flush;
+} // observe scaled field along border
+// -------------------------------------------------------------------------------
+// potential and field, scaled and unscaled, calculated in separate varaiables are consistent
+
+phi = phis;	// use scaled potential, so scaled electric field (factor 1/phi0)
+Ex = -dx(phi)/L0;  Ey = -dy(phi)/L0;
+E = sqrt(square(Ex)+square(Ey));
+EX = Ex*(region==rfluid); EY = Ey*(region==rfluid);	// components of E-field in only fluid region
+EE = sqrt(square(EX)+square(EY));			// E-field magnitude in fluid region
+
+if(mon>1) {	// extra expanded view E-field prior to outer calc loop
+   tst = f5(E(R+dR/2,H/2));       // 3 sig figs & divisible by 5
+   tfac = 0.5;        // factor multiplying test in VARROW definitions
+   VARROW = tfac*tst*SVARR; VISO = VARROW;
+   sp=  "BBMX_scaled_[Ex,Ey],hsv,ln="+LINE; plot([Ex,Ey],pltv,bb=BBMX); BW(2);
+} // extra expanded view E-field prior to outer calc loop
+
+if(mon>1) { // observe E-field prior to outer calc loop
+   PVS(int1d(Th,lslant)([Ex,Ey]'*[-N.y,N.x])/Llslant,"ave scaled field along charged slant surface \n");
+   CF=1/not0(E[].linfty);
+   strp="scaled_E,ln="+LINE; plot([Ex,Ey],pvector,coef=CF,wait=bwait); BW(2);
+   cout.flush;
+   cout << "\n *** scaled field (not recovered to unscaled value) along border\n";
+   for(int j=0; j<doflabs.n; j++) { // update scaled fluid flow along labs (fluid/solid charged interface) border(s)
+      int k = doflabs[j];
+      // see ../FreeFEM++/EOFbkgnd/Ell_charged_surface.pdf
+      real Ebx = EX[][k], Eby = EY[][k];	// U-field border components
+      real Tx = -Ny[j], Ty = Nx[j];			// tangent border components
+      real Ell = Ebx*Tx + Eby*Ty;			// E-field tangent border magnitude
+      if(mon>2 && (j%10==0 || j==doflabs.n-1)) { // every 10th Ex, Ey on charged surface
+         PVW(j,4); PVW(Ebx,10); PVW(Eby,10); PVWn(Ell,10);
+      }
+   } // for(int j=0; j<doflabs.n;, update scaled fluid flow along charged interface
+   PVS(int1d(Th,lslant)([Ex,Ey]'*[-N.y,N.x])/Llslant,"ave scaled E-field along charged slant surface \n");
+   cout.flush;
+} // observe E-field prior to outer calc loop
+	// currently EDITed to here
+
+// -<>-<>-<>-<>-<>-<>-<>-<>- Newton algs for fluid velocity/pressure; ion densities/electrostatic potential
+// *********** "Oseen_Newton.idp"
+real nu = Pe/Re, nufinal=nu, cnu=0.5; // final Reynolds number (close to our conditions)
+include "Oseen_Newton.idp" ; sfile = FILE;	 // fixed error in chis & its use 170330
+// *********** "Oseen_Newton.idp"
+
+// fespace Vh2(Th,P2);
+//Vh2dc U1=ux*(region==rfluid), U2=uy*(region==rfluid);// so all fields (phi, ip, in, [U1,U2]) in 'problem' in Th
+//Vh2dc U1=ux, U2=uy;// so all fields (phi, ip, in, [U1,U2]) in 'problem' in Th
+//Vh2dc Umag = sqrt(U1^2+U2^2);
+// 170603, not Vh2dc so border values can be nonzero
+Vh2 U1=ux*(region==rfluid), U2=uy*(region==rfluid);		// so all fields (phi, ip, in, [U1,U2]) in 'problem' in Th
+Vh2 Umag = sqrt(U1^2+U2^2);
+// *********** "PNP_Newton.idp"
+//include "FH_2_JS_axi_PNP_alg.idp" ; sfile = FILE;
+include "PNP_Newton.idp" ; sfile = FILE;
+// *********** "PNP_Newton.idp"
+
+// -<>-<>-<>-<>-<>-<>-<>-<>- outer calculation loop start
+VhF2 uxtst,uytst, uxtmp,uytmp, uxold,uyold;	// ..tst variables to compare last iteration with current
+Vh2 phitst, iptst, intst;
+int nouter = 0;		// outer loop iteration number
+
+real tolOseen = 1e-7;	// iteration stop tolerance levels 
+real tolPNP = 1e-7;
+real tolouter = 1e-6;
+	tolouter = 1e-5;
+int jmax=0;
+
+real Llabs = int1d(Th,labs)(1.0);	// length of labs border(s)
+
+   jmax = 10;
+   if(mon>2 && nouter%2==0) { // list E-field magnitude parallel to slanted border
+      cout << "\n *** E-field components on channel membrane border\n";
+      cout << "\t( x, y )\t ( Ex(x,y), Ey(x,y) )*phi0/E0\n";
+      for(int j=0; j<=jmax; j++) {
+         y = (H+D)/2 - j*D/jmax;	// y on slanted border
+         if(j==0) y -= 1e-2;		// offset a little from pointed top
+         if(j==jmax) y += 1e-2;		// offset a little from pointed bottom
+         x = fx;		// x on slanted border
+         cout << " (" << setw(7)<<x << "," << setw(7)<<y 
+              << ")\t (" << setw(8)<<Ex(x,y)*phi0/E0 << "," << setw(8)<<Ey(x,y)*phi0/E0 << ")\n";	
+      }
+      cout << "\n";
+   }
+
+//Vh2dc EX, EY;
+while(1)	// *** outer calc loop  
+{
+   nouter++;
+// #######################
+   sp = "\t\t\tScaled ave E along slanted membrane surface,no="+nouter;
+   Eave = int1d(Th,lslant)([Ex,Ey]'*[-N.y,N.x])/Llslant; PVS(Eave,sp+"\n");
+   savf << sp+" = "  << Eave << "\n";
+   sp = " Scaled ave [ux,uy]'*tau along slanted membrane surface, no="+nouter;
+   if(nouter==1) { sp = sp + " (small as before 1st update)"; }
+   Uave = int1d(Th,lslant)([ux,uy]'*[-N.y,N.x])/Llslant; PVS(Uave,sp+"\n");
+   savf << sp+" = " << Uave << "\n";
+// #######################
+   cpuO=clock();	// set outer clock timer
+   uxtst = ux;  uytst = uy;	// save incoming flow fields for possible later use (err calc)
+   while(1)  // *** vicosity loop to solve for flow, initially ip-in=0 as ip=in for chiv term in Oseen, but chis term != 0
+   {    int n=0;
+        real err=0;
+        cout << "\n <><><> \t\t\t Oseen loop, tol = " << tolOseen << ", outer loop = " << nouter << "\t ******\n";
+        if(mon>2) {	// check fields U1, U2 updated along labs border(s)
+           cout << " outer loop iteration " << nouter << endl;
+           U1=ux*(region==rfluid); U2=uy*(region==rfluid);
+           tst = int1d(Th,labs)(U1)/Llabs;
+           PVS(tst,"\t ave U1 (aka normalized ux) on border(s) at start of outer loop\n");
+           tst = int1d(Th,labs)(U2)/Llabs;
+           PVS(tst,"\t ave U2 (aka normalized uy) on border(s) at start of outer loop\n");
+           tst = int1d(Th,labs)(sqrt(square(U1)+square(U2)))/Llabs;
+           PVS(tst,"\t ave |U| on border(s) at start of outer loop\n");
+        } // check fields U1, U2 updated along labs border(s)
+
+        cout.precision(4);
+        Ex = -dx(phi)/L0; Ey = -dy(phi)/L0;	// electric field components S-B scaled
+        E = sqrt(square(Ex) + square(Ey));
+        EX = Ex*(region==rfluid);  EY = Ey*(region==rfluid);	// electric field components fluid region only
+        EE = sqrt(square(EX)+square(EY));
+
+	        if(mon>2 && n==0) {	// check scaled E-field during at start of Oseen loop
+	           PVn( int1d(Th,lslant)([Ex,Ey]'*[-N.y,N.x])/Llslant );
+	           CF=1/not0(E[].linfty);
+	           strp=     "scaled_E,ln="+LINE+",no="+nouter; plot([Ex,Ey],pvector,coef=CF,        wait=bwait); BW(1);
+	           strp="BBMX_scaled_E,ln="+LINE+",no="+nouter; plot([Ex,Ey],pvector,coef=CF,bb=BBMX,wait=bwait); BW(1);
+	        } // check scaled E-field during at start of Oseen loop
+
+        if(mon>2) {	// check fields U1, U2 before updated along labs border(s)
+           cout << endl;
+           tst = int1d(Th,lslant)(U1)/Llslant;
+           PVS(tst,"\t ave U1 before updated along lslant border\n");
+           tst = int1d(Th,lslant)(U2)/Llslant;
+           PVS(tst,"\t ave U2 before updated along lslant border)\n\n");
+        } // check fields U1, U2 before updated along lslant border
+
+// -<>-<>-<>-<>-<>-<>-<>-<>- update [U1,U2] along charged interface using EX,EY for Oseen outer loop calc
+        // N.B. mu_e*E(scaled,max) = u(scaled,max) = u/U0 ~ 1
+        for(int j=0; j<doflabs.n; j++) { //start critical update scaled fluid flow along labs border(s)
+           int k = doflabs[j];
+           // see ../FreeFEM++/EOFbkgnd/Ell_charged_surface.pdf
+           real Ebx = EX[][k], Eby = EY[][k];	// E-field border components
+           real Tx = -Ny[j], Ty = Nx[j];	// normalized tangent border components
+           real Ull = lmu*(Ebx*Tx + Eby*Ty);	// U-field parallel to border
+           U1[][k] = Ull*Tx;  U2[][k] = Ull*Ty;	// flow on charged border is mobility * field (critical update)
+           if(mon>2 && (j%10==0 || j==doflabs.n-1)) { // every 10th U1=ux,U2=uy on charged surface
+              PVW(j,4); PVW(U1[][k],10); PVW(U2[][k],10); PVWn(Ull,10);
+           }
+        } // for(int j=0; j<doflabs.n;,end critical update scaled fluid flow along charged interface
+
+        ux = U1*(region==rfluid);  uy = U2*(region==rfluid);	// Oseen flow variables forced to be in ThF only
+
+	        if(mon>2) {
+cout<<"\n *** <-> *** <-> *** <-> *** <-> *** "; line=LINE; PV(line); cout<<"\t *** <-> *** <-> *** <-> *** <-> ***\n";
+	           PV(nouter); PVS( (phi0/E0)*int1d(Th,lslant)([Ex,Ey]'*[-N.y,N.x])/Llslant,"E fit scaled\n" );
+	           PV(nouter); PVS( (phi0/U0)*int1d(Th,lslant)([U1,U2]'*[-N.y,N.x])/Llslant,"U driving flow\n" );
+	           cout << " ******* OK if ratios between 0.2 and 5.0, I think\n\n";
+	           CF=1/not0(EE[].linfty);
+	           strp="scaled_EE,ln="+LINE+",no="+nouter; plot([EX,EY],pvector,coef=CF,wait=bwait); BW(2);
+	           PVn( int1d(Th,lslant)([EX,EY]'*[-N.y,N.x])/Llslant );
+	           Umag = sqrt(U1^2+U2^2);
+	           CF=1/not0(Umag[].linfty);
+
+	           //VARROW = 2e-3*SVARR; VISO = -VARROW;
+	           tst = int1d(Th,lslant)([ux,uy]'*[-N.y,N.x])/Llslant;
+	           tst = f5(abs(tst));
+	           tfac = 0.5;
+	           cout << " tfac = " << tfac << ", tst = " << tst << endl;
+	           VARROW = tfac*tst*SVARR; VISO = VARROW;
+line=LINE;
+PV(nouter); PV(line); PVn(tst);
+	           cout << " VARROW = " << VARROW << endl;
+	           sp=     "scaled_U,hsv,ln="+LINE+",no="+nouter; plot([ux,uy],        pltv); BW(2);
+	           sp="BBMX_scaled_U,hsv,ln="+LINE+",no="+nouter; plot([ux,uy],bb=BBMX,pltv); BW(2);
+	           sp= "BBM_scaled_U,hsv,ln="+LINE+",no="+nouter; plot([ux,uy],bb=BBM, pltv); BW(2);
+	           sp= "BBTST_scaled_U,hsv,ln="+LINE+",no="+nouter; plot([ux,uy],bb=BBTST, pltv); BW(2);
+	           PVn( int1d(Th,lslant)([ux,uy]'*[-N.y,N.x])/Llslant );
+	        }
+
+        if(mon>2) {	// check fields U1, U2 after updated along labs border(s)
+           cout << endl;
+           tst = int1d(Th,labs)(U1)/Llabs;
+           PVS(tst,"\t ave U1 after updated along labs border(s)\n");
+           tst = int1d(Th,labs)(U2)/Llabs;
+           PVS(tst,"\t ave U2 after updated along labs border(s)\n\n");
+        } // check fields U1, U2 after updated along labs border(s)
+
+// -<>-<>-<>-<>-<>-<>-<>-<>- Oseen calc [ux,uy] (scaled fluid velocity) & PP (scaled pressure)
+        int nO=0;
+   	while(1)	// *** each Pe/Re Newton loop
+   	{
+           nO++;
+           cpuOi=clock();	// set Oseen iteration clock timer
+   	   if(nO==1) { cout << " *** rey = " << 1.0/nu << ", tolOseen = " << tolOseen << endl; cout.flush; }
+   	   cout << nO << " Oseen iter\n"; cout.flush;
+   	   uxold = ux; uyold = uy; PPold = PP;	// update prior iteration values
+
+   	   system("date");
+	   ux = ux*(region==rfluid); uy = uy*(region==rfluid);
+   	   Oseen;	// see "../FreeFEM++/PNP+NScalc2017/tmp_Aug/sim_EOF_final_2/Oseen_Newton.idp"
+
+   	   ux[] -= dux[];  uy[] -= duy[];  PP[]  -= dPP[];
+   	   real Lux=not0(ux[].linfty),  Luy = not0(uy[].linfty), LPP = not0(PP[].linfty);
+   	   err = dux[].linfty/Lux + duy[].linfty/Luy + dPP[].linfty/LPP;
+           //err = sqrt( int2d(Th1)( square(ux-uxold)+square(uy-uyold)+square(PP-PPold) ) )/Th1.area ;
+   	   umag = sqrt(ux^2+uy^2);
+   	   CF=1/not0(umag[].linfty);
+   	   if(mon>2) { // examine [ux,uy] during Oseen iterations
+	      PVS( int1d(Th,lslant)([ux,uy]'*[-N.y,N.x])/Llslant,"Oseen fit scaled to E0-scaled E\n" );
+   	      strp=    "[ux,uy],nO="+nO+",ln="+LINE+",no="+nouter; plot([ux,uy],PP,pvector,coef=CF,wait=bwait); BW(2);
+   	      strp="BBU_[ux,uy],nO="+nO+",ln="+LINE+",no="+nouter; plot([ux,uy],PP,pvector,coef=CF,bb=BBU,wait=bwait); BW(2);
+   	      strp="BBM_[ux,uy],nO="+nO+",ln="+LINE+",no="+nouter; plot([ux,uy],PP,pvector,coef=CF,bb=BBM,wait=bwait); BW(2);
+   	      strp="BBL_[ux,uy],nO="+nO+",ln="+LINE+",no="+nouter; plot([ux,uy],PP,pvector,coef=CF,bb=BBL,wait=bwait); BW(2);
+	      strp=     "BBL_Ey,nO="+nO+",ln="+LINE+",no="+nouter; plot(Ey,        pscalar,        bb=BBL,wait=bwait); BW(2);
+	      strp=     "BBL_uy,nO="+nO+",ln="+LINE+",no="+nouter; plot(uy,        pscalar,        bb=BBL,wait=bwait); BW(2);
+	      strp=     "BBM_uy,nO="+nO+",ln="+LINE+",no="+nouter; plot(uy,        pscalar,        bb=BBM,wait=bwait); BW(2);
+   	   } // examine [ux,uy] during Oseen iterations
+   	   cout << nO << " err = " << err << "\n";
+   	   cout << " secs flow calc nu iteration = " << clock()-cpuOi << "\n\n"; cout.flush;
+   	   if(err < tolOseen) {
+   		    cout << " Oseen break, err = " << err << ", tolOseen = " << tolOseen << endl;
+   		    break; // converge 
+   	   }
+   	   if( nO>4 && err > 10.) break; //  Blowup ?
+   	} // *** while each Pe/Re Newton loop
+   	if(err < tolOseen)	// if converge  decrease nu (more difficult)
+   	{
+   		CF=0.1/not0(umag[].linfty);
+   		if( nu == nufinal) {
+		   cout << " *-*-* reached nufinal, rey = " << 1.0/nu << endl;
+		   break; 
+		}
+   		if( nO < 4) cnu=cnu^1.5;	// fast converge => change faster 
+   		nu = max(nufinal, nu*cnu);	// new vicosity 
+
+   		uxold=ux;  uyold=uy;  PPold=PP;	//  save correct solution ...
+   	}
+   	else {	// if blowup,  increase nu (more simple)
+   		assert(cnu < 0.95);	// final blowup ...  
+   		nu = nu/cnu;		//  get previous value of viscosity 
+   		cnu= cnu^(1./1.5);	// no conv. => change lower 
+   		nu = nu*cnu;		// new vicosity
+   		cout << " restart nu = " << nu << " Rey= "<< 1./nu << "  (cnu = " << cnu << " ) \n"; cout.flush;
+   		// restore correct solution ..
+   		ux=uxold;  uy=uyold;  PP=PPold; 
+   	}   
+   } // *** while Oseen viscosity loop
+   cout << " secs Oseen flow calc = " << clock()-cpuO << "\n "; cout.flush;
+   cout << " secs current total = " << clock()-cput << "\n\n"; cout.flush;
+
+   U1 = ux*(region==rfluid); U2 = uy*(region==rfluid);	// tanNlPNP (PNP solver) uses fields only in fluid
+   CF=0.3/not0(Umag[].linfty);
+   if(mon>1 && nouter%2==0) {	// plots after Oseen loop
+   	strp="BBM_[U1,U2],Oseen,rey="+1./nu+",no="+nouter; plot([U1,U2],PP,pvector,coef=CF,bb=BBM,wait=bwait); BW(1);
+   }
+   if(mon>2) {	// plots after Oseen loop
+   	strp=    "[U1,U2],Oseen,rey="+1./nu+",ln="+LINE+",no="+nouter;
+           plot([U1,U2],PP,pvector,coef=CF,       wait=bwait); BW(1);
+   	strp="BBU_[U1,U2],Oseen,rey="+1./nu+",ln="+LINE+",no="+nouter;
+           plot([U1,U2],PP,pvector,coef=CF,bb=BBU,wait=bwait); BW(1);
+   	strp="BBL_[U1,U2],Oseen,rey="+1./nu+",ln="+LINE+",no="+nouter;
+           plot([U1,U2],PP,pvector,coef=CF,bb=BBL,wait=bwait); BW(1);
+   	strp="BBM_[U1,U2],Oseen,rey="+1./nu+",ln="+LINE+",no="+nouter;
+           plot([U1,U2],PP,pvector,coef=CF,bb=BBM,wait=bwait); BW(1);
+   	strp= "BB_[U1,U2],Oseen,rey="+1./nu+",ln="+LINE+",no="+nouter;
+           plot([U1,U2],PP,pvector,coef=CF,bb=BB, wait=bwait); BW(1);
+	tst = int1d(Th,lslant)([ux,uy]'*[-N.y,N.x])/Llslant;
+	tst = f5(abs(tst));
+	tfac = 0.5;
+	VARROW = tfac*tst*SVARR; VISO = VARROW;
+line=LINE;
+PV(nouter); PV(line); PVn(tst);
+	//VARROW = 2e-3*SVARR; VISO = -VARROW;
+   	sp="BBMX_[U1,U2],Oseen_scaled,hsv,no="+nouter+",ln="+LINE; plot([U1,U2],PP,pltv,bb=BBMX); BW(1);
+   	sp=" BBM_[U1,U2],Oseen_scaled,hsv,no="+nouter+",ln="+LINE; plot([U1,U2],PP,pltv,bb=BBM ); BW(1);
+   	sp="  BB_[U1,U2],Oseen_scaled,hsv,no="+nouter+",ln="+LINE; plot([U1,U2],PP,pltv,bb=BB  ); BW(1);
+   	PVn( int1d(Th,lslant)([ux,uy]'*[-N.y,N.x])/Llslant );
+   	PVn( int1d(Th,lslant)([U1,U2]'*[-N.y,N.x])/Llslant );
+   }
+
+// sim paper figs
+//VARROW = (U0/phi0)*SVARR; VISO = VARROW;
+// TST 170824
+	tst = int1d(Th,lslant)([ux,uy]'*[-N.y,N.x])/Llslant;
+	tst = f5(abs(tst));
+	tfac = 0.5;
+	VARROW = tfac*tst*SVARR; VISO = VARROW;
+	if(nouter>1) VARROW *= 7.5;
+// TST 170824
+PV(nouter); PVn(tst);
+prarr(VARROW);
+
+strp= "BBM_[U1,U2]_old"; plot([U1,U2],pvector,wait=bwait,bb=BBM); BW(1);
+sp= "BBM_[U1,U2]"; plot([U1,U2],pltv,bb=BBM); BW(1);
+sp= "BBL_[U1,U2]_ln="+LINE+"_no="+nouter; plot([U1,U2],pltv,bb=BBL); BW(1);
+
+   int iter = 0, nit = 0;
+
+   real err = 1;
+   cout.precision(3);
+   VhF2 idiff;
+   cpuPNP = clock();
+   cout << "\n <><><> \t\t\t PNP loop, tol = " << tolPNP << ", outer loop " << nouter << "\t ******\n";
+   phitst = phi; iptst = ip;  intst = in;	// save incoming ion concentrations for possible later use (err calc)
+
+// -<>-<>-<>-<>-<>-<>-<>-<>- Poisson-Nernst-Planck calc of scaled ion densities (ip,in) and scaled potential (phi)
+   while( 1 ) { // *** start ion transport Newton loop
+      iter++;
+      cout << "\n start iter " << iter << endl; cout.flush;
+      system("date");
+      cpuPNPi = clock();	// iter timer
+      ipold=ip;  inold=in;  phiold=phi;
+
+      tanNlPNP;
+      cout << endl;
+
+      ip[] -= dip[];  in[] -= din[];  phi[] -= dphi[];	// update ion & potential fields
+      Ex = -dx(phi)/L0;  Ey = -dy(phi)/L0;
+
+      real Lip=not0(ip[].linfty),  Lin = not0(in[].linfty), Lphi = not0(phi[].linfty);
+      err = dip[].linfty/Lip + din[].linfty/Lin + dphi[].linfty/Lphi;
+      //err = sqrt( int2d(Th,rfluid)( square(ip-ipold)+square(in-inold)+square(phi-phiold) ) )/Th1.area ;
+      ipv=ip*(region==rfluid); inv=in*(region==rfluid); 	// for viewing only in fluid region
+      idiff=ipv-inv;	// for viewing only in fluid region
+      idiff = idiff*(region==rfluid);
+      nit = iter;
+      if(mon>2) {	// PNP loop field values
+         strp="phi,iter="+nit+",no="+nouter; plot(phi,pscalar,wait=bwait); BW(1);
+         strp="in,iter="+nit+",no="+nouter; plot(inv,pscalar,wait=bwait); BW(1);
+         strp="BBM_in,iter="+nit+",no="+nouter; plot(inv,pscalar,bb=BBM,wait=bwait); BW(1);
+         strp="ip,iter="+nit+",no="+nouter; plot(ipv,pscalar,wait=bwait); BW(1);
+         strp="BBM_ip,iter="+nit+",no="+nouter; plot(ipv,pscalar,bb=BBM,wait=bwait); BW(1);
+         strp="idiff,iter="+nit+",no="+nouter; plot(idiff,pscalar,wait=bwait); BW(1);
+         strp="BBM_idiff,iter="+nit+",no="+nouter; plot(idiff,pscalar,bb=BBM,wait=bwait); BW(1);
+      }
+      cout << " iter = " << nit << "\t err = " << err << "\t\t" << clock()-cpuPNPi << " secs\n"; cout.flush;
+
+      if(err < tolPNP) { cout << "\n break on err = " << err << ", tol = " << tolPNP << "\n"; cout.flush; break; }
+
+      if(nit>=10) {
+         cout << " !!!!!!!!!! possible blowup in tanNlPNP, nouter = " << nouter << endl; cout.flush;
+         exit(-1);
+      }
+   } // *** while end ion transport Newton loop
+
+   if(mon>1 && nouter%2==0) { // potential, field after alternate outer calc loops
+      strp="BBM_PNP_phi,no="+nouter; plot(phi,pscalar,bb=BBM,wait=bwait); BW(1);
+      strp =     "PNP_[Ex,Ey],no="+nouter; plot([Ex,Ey],pvector,       wait=bwait); BW(1);
+      strp = "BBM_PNP_[Ex,Ey],no="+nouter; plot([Ex,Ey],pvector,bb=BBM,wait=bwait); BW(1);
+   } // potential, field after alternate outer calc loops
+
+   jmax = 10;
+   if(mon>2) { // list E-field magnitude parallel to slanted border
+      cout << "\n *** E-field and flow components on channel membrane border\n";
+      cout << setw(4)<<nouter << "\t( x, y )\t ( Ex(x,y), Ey(x,y) )*phi0/E0";
+      cout << "    ( ux(x,y), uy(x,y) )*phi0/U0\n";
+      real Tx = -dR/Llslant, Ty = -D/Llslant;
+      for(int j=0; j<=jmax; j++) {
+         y = (H+D)/2 - j*D/jmax;	// y on slanted border
+         if(j==0) y -= 1e-3;		// offset a little from pointed top
+         if(j==jmax) y += 1e-3;		// offset a little from pointed bottom
+         x = fx;		// x on slanted border
+         cout << " (" << setw(7)<<x << "," << setw(7)<<y 
+              << ")\t (" << setw(8)<<Ex(x,y)*phi0/E0 << "," << setw(8)<<Ey(x,y)*phi0/E0
+              << ")\t\t (" << setw(11)<<ux(x,y)*phi0/U0 << "," << setw(11)<<uy(x,y)*phi0/U0 << ")";	
+         real ullx = ux(x,y)*Tx, ully = uy(x,y)*Ty;
+         real ull = sqrt(ullx^2+ully^2);
+         cout << "\t ull = " << ull*phi0/U0 << endl;
+      }
+      cout << "\n";
+   }
+
+   cout << " secs PNP calc = " << clock()-cpuPNP << "\n "; cout.flush;
+   cout << " secs current total = " << clock()-cput << "\n\n"; cout.flush;
+
+   //tst = int1d(Th,linp)(phi)/W;
+   //cout << "\n ########### final potential at input = " << tst << "\n\n";
+
+   ipv=ip*(region==rfluid); inv=in*(region==rfluid); 	// for viewing only in fluid region
+   idiff=ipv-inv;	// for viewing only in fluid region
+   idiff = idiff*(region==rfluid);
+   if(mon>2 && nouter%2==0) { // plots after tanNlPNP loop
+      strp=    "phi,PNP_final,iter="+nit+",no="+nouter; plot(phi,pscalar,       wait=bwait); BW(1);
+      strp="BBM_phi,PNP_final,iter="+nit+",no="+nouter; plot(phi,pscalar,bb=BBM,wait=bwait); BW(1);
+      strp=    "in,PNP_final,iter="+nit+",no="+nouter; plot(inv,pscalar,       wait=bwait); BW(1);
+      strp="BBM_in,PNP_final,iter="+nit+",no="+nouter; plot(inv,pscalar,bb=BBM,wait=bwait); BW(1);
+      strp=    "ip,PNP_final,iter="+nit+",no="+nouter; plot(ipv,pscalar,       wait=bwait); BW(1);
+      strp="BBM_ip,PNP_final,iter="+nit+",no="+nouter; plot(ipv,pscalar,bb=BBM,wait=bwait); BW(1);
+      strp=    "idiff,PNP_final,iter="+nit+",no="+nouter; plot(idiff,pscalar,       wait=bwait); BW(1);
+      strp="BBM_idiff,PNP_final,iter="+nit+",no="+nouter; plot(idiff,pscalar,bb=BBM,wait=bwait); BW(1);
+      strp =       "BBM_PNP_final_[Ex,Ey]"+",no="+nouter; plot([Ex,Ey],pvector,bb=BBM,wait=bwait); BW(1);
+      strp =     "PNP_final_fluid_[EX,EY]"+",no="+nouter; plot([EX,EY],pvector,       wait=bwait); BW(1);
+      strp = "BBM_PNP_final_fluid_[EX,EY]"+",no="+nouter; plot([EX,EY],pvector,bb=BBM,wait=bwait); BW(1);
+   }
+
+   real lmax = 10*lambdaD/L0;
+   lmax = min(R+dR/2,lmax);
+   // input file for gnuplot
+   { // block containing 'gnu'
+      int nplt=100;
+      cout.precision(5);
+      real[int] XX(nplt+1),YY(nplt+1);
+      ofstream gnu("plot.gp");
+      real X0 = R+dR/2, Y0 = H/2;
+      real dr = -1.0*lmax/nplt;
+      x = X0; y = Y0;
+      real A0=idiff(X0,Y0), Aj;
+      for(int j=0; j<=nplt; j++)
+      {
+         XX[j] = x - X0;
+         x = X0 + j*dr;
+         Aj = idiff(x,y)/A0;
+         YY[j] = log(Aj);	// plotting log(n+ - n-)
+         XX[j] = X0 - x;
+         XX[j] /= lambdaD/L0;
+         gnu <<  XX[j] << " " << YY[j] << endl;
+      }
+      plot([XX(0:nplt),YY(0:nplt)],cmm="mid-pore,no="+nouter,wait=bwait); BW(1);
+      cout.default;
+   } // 'gnu' closed at block end
+
+   //  to call gnuplot command and wait 5 second (thanks to UNIX command)
+   //  and make postscipt plot
+exec("echo 'plot \"plot.gp\" with linespoints \
+pause 5 \
+set term postscript \
+set output \"pore.eps\" \
+set autoscale \
+set xtic auto \
+set ytic auto \
+set xlabel \"pore distance from surface/Debye length\" \
+set ylabel \"log(norm n+ - n- conc)\" \
+replot \
+quit' | gnuplot");
+
+cout << endl; cout.flush;
+
+   tst = sqrt( int2d(Th,rfluid)( square(ip-iptst) + square(in-intst) ) )/ThF.area ;
+   cout << " !!";
+   cout << "      ion conc error = " << tst << ", no = " << nouter << endl;
+   err = tst;
+
+   tst = sqrt( int2d(Th,rfluid)( square(ux-uxtst) + square(uy-uytst) ) )/ThF.area ;
+   cout << " !!";
+   cout << " flow velocity error = " << tst << ", no = " << nouter << endl;
+   err += tst;
+
+   tst = sqrt( int2d(Th)( square(phi-phitst) ) )/Th.area ;
+   cout << " !!";
+   cout << "     potential error = " << tst << ", no = " << nouter << endl;
+   err += tst;
+   cout << " ********************** outer loop = " << nouter << "\t combined error = " << err << "\n"; cout.flush;
+
+   if(nouter>2 && err < tolouter) {
+      cout << " <><><><><><> outer loop break, tol = " << tolouter << "\n";
+      break;
+   }
+   if(nouter>=10) {
+      cout << "\n !!!!!!!!!! break on nouter == " << nouter << "\n\n";
+      break;
+   }
+} // *** while outer calc loop end
+
+// check electric field solution on and near slanted interface in fluid
+real ds = Th.hmin;
+macro dsx(n) x+n*ds*N.x//
+macro dsy(n) y+n*ds*N.y//
+cout << " < int1d(Th,lslant)([EX(dsx(0),dsy(0)),EY(dsx(0),dsy(0))]'*[-N.y,N.x]) > = "
+       << int1d(Th,lslant)([EX(dsx(0),dsy(0)),EY(dsx(0),dsy(0))]'*[-N.y,N.x])/Llslant << endl; 
+cout << " < int1d(Th,lslant)([EX(dsx(1),dsy(1)),EY(dsx(1),dsy(1))]'*[-N.y,N.x]) > = "
+       << int1d(Th,lslant)([EX(dsx(1),dsy(1)),EY(dsx(1),dsy(1))]'*[-N.y,N.x])/Llslant << endl; 
+cout << " < int1d(Th,lslant)([EX(dsx(2),dsy(2)),EY(dsx(2),dsy(2))]'*[-N.y,N.x]) > = "
+       << int1d(Th,lslant)([EX(dsx(2),dsy(2)),EY(dsx(2),dsy(2))]'*[-N.y,N.x])/Llslant << endl; 
+cout << endl;
+cout << " < int1d(Th,lslant)([ux(dsx(0),dsy(0)),uy(dsx(0),dsy(0))]'*[-N.y,N.x]) > = "
+       << int1d(Th,lslant)([ux(dsx(0),dsy(0)),uy(dsx(0),dsy(0))]'*[-N.y,N.x])/Llslant << endl; 
+cout << " < int1d(Th,lslant)([ux(dsx(1),dsy(1)),uy(dsx(1),dsy(1))]'*[-N.y,N.x]) > = "
+       << int1d(Th,lslant)([ux(dsx(1),dsy(1)),uy(dsx(1),dsy(1))]'*[-N.y,N.x])/Llslant << endl; 
+cout << " < int1d(Th,lslant)([ux(dsx(2),dsy(2)),uy(dsx(2),dsy(2))]'*[-N.y,N.x]) > = "
+       << int1d(Th,lslant)([ux(dsx(2),dsy(2)),uy(dsx(2),dsy(2))]'*[-N.y,N.x])/Llslant << endl; 
+cout << endl;
+cout << " int1d(Th,laxis)(phi) = " << int1d(Th,laxis)(phi) << endl; 
+cout << " int1d(Th,laxis)([Ex,Ey]'*[-N.y,N.x])/H = " << int1d(Th,laxis)([Ex,Ey]'*[-N.y,N.x])/H << endl;
+cout << endl;
+
+      cout << "\n *** final E-field and flow components on channel membrane border\n";
+      cout << setw(2)<<nouter << " = nouter, ( x, y )\t ( Ex(x,y), Ey(x,y) )*phi0/E0";
+      cout << "    ( ux(x,y), uy(x,y) )*phi0/U0\n";
+      real nx = -D/Llslant, ny = dR/Llslant;
+      real tx = -ny, ty = nx;
+      real Ds=2*Th.hmin, Dsx=Ds*nx, Dsy=Ds*ny; 
+      for(int j=0; j<=jmax; j++) {
+         y = (H+D)/2 - j*D/jmax;	// y on slanted border
+         //if(j==0) y -= 1e-3;		// offset a little from pointed top
+         //if(j==jmax) y += 1e-3;		// offset a little from pointed bottom
+         x = fx;		// x on slanted border
+         x += Dsx; y += Dsy;	// offset a little from the border into the fluid
+         cout << " (" << setw(7)<<x << "," << setw(7)<<y 
+              << ")\t ("   << setw(11)<<Ex(x,y)*phi0/E0 << "," << setw(11)<<Ey(x,y)*phi0/E0
+              << ")\t\t (" << setw(11)<<ux(x,y)*phi0/U0 << "," << setw(11)<<uy(x,y)*phi0/U0 << ")";	
+         real ullx = ux(x,y)*tx, ully = uy(x,y)*ty;
+         real ull = sqrt(ullx^2+ully^2);
+         cout << "\t ull = " << ull*phi0/U0 << endl;
+      }
+      cout << "\n";
+
+VhF2 idiff = ipv-inv;
+CF=1.0/EE[].linfty;
+strp= "BBU_ipv-inv_final,no="+nouter; plot(  idiff,        pscalar,bb=BBU, wait=bwait); BW(2); 
+strp= "BBL_ipv-inv_final,no="+nouter; plot(  idiff,        pscalar,bb=BBL, wait=bwait); BW(2); 
+strp=     "[EX,EY]_final,no="+nouter; plot([EX,EY],coef=CF,pvector,        wait=bwait); BW(2);
+strp="BBMX_[EX,EY]_final,no="+nouter; plot([EX,EY],coef=CF,pvector,bb=BBMX,wait=bwait); BW(2);
+strp= "BBM_[EX,EY]_final,no="+nouter; plot([EX,EY],coef=CF,pvector,bb=BBM, wait=bwait); BW(2);
+//VARROW = (E0/phi0)*SVARR; VISO = VARROW;
+tst = f5(EE(0.9*R,(H-D)/2));
+cout << " EE tst = " << tst << endl;
+tfac *= 0.5;
+VARROW = tfac*tst*SVARR; VISO = VARROW;
+line=LINE;
+PV(nouter); PV(line); PVn(tst);
+sp=       "scaled_final_[EX,EY],hsv,no="+nouter; plot([EX,EY],pltv,bb=BBM ); BW(2);
+sp=   "BBM_scaled_final_[EX,EY],hsv,no="+nouter; plot([EX,EY],pltv,bb=BBM ); BW(2);
+
+CF=.1/umag[].linfty;
+strp=     "[ux,uy]_final,no="+nouter; plot([ux,uy],coef=CF,pvector,        wait=bwait); BW(2);
+strp="BBMX_[ux,uy]_final,no="+nouter; plot([ux,uy],coef=CF,pvector,bb=BBMX,wait=bwait); BW(2);
+strp="BBM_[ux,uy]_final,no="+nouter;  plot([ux,uy],coef=CF,pvector,bb=BBM, wait=bwait); BW(2);
+strp="BBL_[ux,uy]_final,no="+nouter;  plot([ux,uy],coef=CF,pvector,bb=BBL, wait=bwait); BW(2);
+	tst = int1d(Th,lslant)([ux,uy]'*[-N.y,N.x])/Llslant;
+	tst = f5(abs(tst));
+	tfac = 0.5;
+	VARROW = tfac*tst*SVARR; VISO = VARROW;
+line=LINE;
+PV(nouter); PV(line); PVn(tst);
+	if(nouter>1) VARROW *= 7.5;
+sp=    "[ux,uy],Oseen_final,hsv,no="+nouter; plot([ux,uy],pltv       ); BW(1)
+sp="BBL_[ux,uy],Oseen_final,hsv,no="+nouter; plot([ux,uy],pltv,bb=BBL); BW(1)
+sp="BBM_[ux,uy],Oseen_final,hsv,no="+nouter; plot([ux,uy],pltv,bb=BBM); BW(1)
+	
+if(mon>2) {
+   strp="BBU_EX_final,no="+nouter; plot(EX,pscalar,bb=BBU,wait=bwait); BW(2);
+   strp="BBU_EY_final,no="+nouter; plot(EY,pscalar,bb=BBU,wait=bwait); BW(2);
+   strp="BBL_EX_final,no="+nouter; plot(EX,pscalar,bb=BBL,wait=bwait); BW(2);
+   strp="BBL_EY_final,no="+nouter; plot(EY,pscalar,bb=BBL,wait=bwait); BW(2);
+   strp="BBU_ux_final,no="+nouter; plot(ux,pscalar,bb=BBU,wait=bwait); BW(2);
+   strp="BBU_uy_final,no="+nouter; plot(uy,pscalar,bb=BBU,wait=bwait); BW(2);
+   strp="BBL_ux_final,no="+nouter; plot(ux,pscalar,bb=BBL,wait=bwait); BW(2);
+   strp="BBL_uy_final,no="+nouter; plot(uy,pscalar,bb=BBL,wait=bwait); BW(2);
+   strp="BBM_uy_final,no="+nouter; plot(uy,pscalar,bb=BBM,wait=bwait); BW(2);
+   strp="BBTST_[ux,uy]_final,no="+nouter; plot([ux,uy],pscalar,bb=BBTST,wait=bwait); BW(2);
+}
+
+// -<>-<>-<>-<>-<>-<>-<>-<>- finish; save solutions for EX,EY & U1,U2
+// %%%%%%%%%%%%
+{ // save solutions below
+   ofstream fileux("ux.txt"); cout << " write \"ux.txt\"\n";
+   fileux << ux[];
+   ofstream fileuy("uy.txt"); cout << " write \"uy.txt\"\n";
+   fileuy << uy[];
+   ofstream fileEX("EX.txt"); cout << " write \"EX.txt\"\n";
+   fileEX << EX[];
+   ofstream fileEY("EY.txt"); cout << " write \"EY.txt\"\n";
+   fileEY << EY[];
+   system("ls -lt ??.txt");
+} // save solutions above
+// %%%%%%%%%%%%
+
+cout << "\n *+*+*+* output files needed later are  geo.dat EX.txt EY.txt U1.txt U2.txt pore.eps  and\n";
+cout << " *+*+*+*+*  " << smsh+".msh" << "\n";
+PVS(R,"radius microns,");PVS(D,"membrane thickness microns,"); PV(W); PVn(H); 
+PVn(Th.hmin);
+
+/*@ comment out below *@/
+/@* comment out above @*/
+
+cout << " total time used = " << clock()-cput << " secs\n"; cout.flush; system("date");
+if(mon>0) { cout << "\n  exit \"" << FILE << "\"\n"; }
+cout << "\n END\n\n"; cout.flush;

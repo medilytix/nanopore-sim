@@ -1,0 +1,76 @@
+// macros/procedures to ease program monitoring
+
+if(mon>0) { cout << "\n enter \"" << FILE << "\"\n"; cout.flush; }
+
+// lines equivalent to the following 2 lines at top of main program, global variables
+//int mon = 1, monold=mon;
+//int ie=0, line=LINE; string sfile=FILE;
+// see ../manual.d/mon_tst.edp for example use
+
+// int line; string sfile; in main -- each file, sfile = FILE; before calling trk, line=LINE;
+macro trk() cout << " +=+=+ line = " << line << ", file = " << sfile << endl; cout.flush;//EoM
+
+macro PVn(V) cout << Stringification ( V = ) << V << "\n" // Print Value, trailing '\n'
+macro PV(V) cout << Stringification ( V = ) << V << ", " // Print Value, trailing ','
+macro PVS(V,S) cout << Stringification ( V = ) << V << " " << S // Print Value, trailing ' ', trailing string S
+macro PVW(V,W) cout << Stringification ( V = ) << setw(W) << V << ", " // Print Value, Width, trailing ','
+macro PVWn(V,W) cout << Stringification ( V = ) << setw(W) << V << "\n" // Print Value, Width, trailing '\n'
+macro PVWS(V,W,S) cout << Stringification ( V = ) << setw(W) << V << " " << S // Print Value, Width, trailing ' ', string S
+macro not0(den) (abs(den)<1e-10 ? 1 : den) //  for use for 'den' as denominator to avoid divide-by-(at or near)zero
+
+string strp;	// for cmm/ps params in 'plot'
+macro pscalar fill=1,value=1,cmm=strp,ps=strp+".eps" // for plotting a scalar
+macro pvector cmm=strp,ps=strp+".eps",value=1 // for plotting vector
+
+// macro to print array slightly differently
+macro prarrS(A,S) /* string S follows array A values */
+if(A.n>5)
+{
+   cout << Stringification ( A) << ", n = " <<  A;
+   cout << S;
+}
+else
+{
+
+   cout << Stringification ( A = [);
+   for(int k=0; k<A.n-1; k++) { 
+      cout << A[k] << ", ";
+   }
+   cout << A[A.n-1] << "]" << S;
+} // EoM
+
+macro prarr(A) /* array A values */
+if(A.n>5)
+{
+   cout << Stringification ( A) << ", n = " <<  A << endl;
+}
+else
+{
+
+   cout << Stringification ( A = [);
+   for(int k=0; k<A.n-1; k++) {
+      cout << A[k] << ", ";
+   }
+   cout << A[A.n-1] << "]\n";
+} // EoM
+
+// returns 3 significant digits divisible evenly by 5
+func real f5(real v) {
+   if(abs(v) < 1e-10) return 1.0;
+   real r=1.0, v0=v;
+   int sgn = v0/abs(v0);
+   if(abs(v0)>1000.0) r=1e-1;
+   if(abs(v0)<100.0)  r=1e+1;
+   //cout << " r = " << r << endl;
+   int n = 0;
+   while (abs(v0)>1000.0 || abs(v0)<100.0) {
+      v0 *= r;
+      n++;
+      if(n>10) return 1.0;
+   }
+   int v2 = int(v0/5+sgn*0.5);
+   //cout << " *** n = " << n << endl;
+   return 5*v2/r^n;
+}
+
+if(mon>0) { cout << "  exit \"" << FILE << "\"\n\n"; cout.flush; }

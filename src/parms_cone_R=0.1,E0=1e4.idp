@@ -1,0 +1,26 @@
+// file: "parms_cone_R=0.1,E0=1e4.idp"
+// collect the parameters that usually vary in a single place
+
+if(mon>0) { cout << "\n enter \"" << FILE << "\"\n"; cout.flush; }
+
+bool bslant=true;
+		//bslant=false;		// TST ??? cyld, cylindrical test
+bool bEperp=false;
+bool bwait = false;		// true=>pause at plot, false=>hold plot arg BW sec
+real W=20, H=W, R=0.10, D=2;	// domain now square, was H=15
+		//W=20; H=W; R=2; D=8;	// TST ??? cyld, cylindrical test
+PVS(R,"radius microns,");PVS(D,"membrane thickness microns,"); PV(W); PVn(H); 
+PVS(bslant,": true => slanted pore, false => cylinder; "); PVS(bwait,": true=>pause at plot, false=>hold plot arg BW sec\n");
+PVS(bEperp,": true => add monitor lines parallel to interface for monitoring perpendicular field\n");
+bool badapt=true;
+	//badapt=false;	// TST ???, cyld fig
+bool bcrg=true;	// if T, labs=lmbrn; else, laqbs=lslant
+PVS(badapt,": true => adapt mesh near interface; "); PVS(bcrg,": true => labs=lmbrn; else, laqbs=lslant\n");
+int S=5;
+	//S=2;	// TST ??? cyld Fig 1
+if(badapt) S=2;
+real m2mu=1e-6, mu2m=1./m2mu;	// m2mu converts SI length unit (meters) to mesh units
+real E0 = 1e+4;		// "typical" external EOF field, 10 V/mm
+
+if(mon>0) { cout << "\n  exit \"" << FILE << "\"\n"; cout.flush; }
+

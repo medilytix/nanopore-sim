@@ -1,0 +1,34 @@
+// Author: F. Hecht, 10 Aug 2016
+// Usage:
+/*
+  extract the list of degrees of freedom of 2d finite elemnt
+   on connect boundary given by a list of labels or one label;
+   the list is sorted in the direction of the +/- tangent,
+   the  orientation is 1: direct or -1 clockwise
+   The parameters are:
+   - labs : int[int] or int to define the boundary   (in)
+   - Wh  the fespace                                 (in)
+   - int[int]  doflabs  (resized array)              (out)
+   - int orient : orientation of the border, direct (1) or indirect -1 (in)
+*/
+
+macro ExtractDofsonBorder(labs,Wh,doflabs,orient)
+{
+mesh Th=Wh.Th;
+fespace VhExtractDofsonBorder(Th,P1);
+VhExtractDofsonBorder abslabs,onlon,atest;
+solve Pbabciss(abslabs,atest)	/* default solver UMFPACK fails in some cases */
+= int2d(Th,qft=qf1pTlump)(abslabs*atest*1e-8/area)
+  +  int1d(Th,labs,qfe=qf1pElump)([dx(abslabs),dy(abslabs)]'*[-N.y,+N.x]*atest)
+  -  int1d(Th,labs,qfe=qf1pElump)(orient*atest);
+  real abslabsmax = 2*abslabs[].max;
+  varf vlabsneg(u,v) = on(labs,u=abslabs-abslabsmax);
+  if(0)  plot(abslabs,wait=1);
+  real[int] absc=vlabsneg(0,Wh);
+  doflabs.resize(Wh.ndof);
+  doflabs=0:Wh.ndof-1;
+  sort(absc,doflabs);
+  absc= absc? 1:0;
+  doflabs.resize(absc.sum+0.5);
+}
+// end of 'ExtractDofsonBorder' macro

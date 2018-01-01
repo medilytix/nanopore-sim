@@ -1,0 +1,189 @@
+// file: PNP_constants_microns_2.idp , 
+// derived from ../FH_June2015_original_tests/PNP_constants_microns_2.idp
+
+/*@ if stand alone make 2 lines below active *@/
+	string sfile;
+	int mon = 2; // if stand-alone
+	real m2mu=1e-6, mu2m=1./m2mu;	// m2mu converts SI length unit (meters) to mesh units
+/@* if stand alone make 2 lines active active @*/
+
+sfile=FILE;
+if(mon>0) cout << "\n enter PNP_constants_microns_2.idp\n";
+
+real lDn, lDp, lnu, le, lmun, lmup, rhof, T, lepsw, lepsSi, lepsSiO2;
+real NA, kB, I, zp, zn, lambdaD, kappa2, kappa; 
+
+// originally in  SI units; U for rescaling, the units in fundamental quantities, ie
+// m = mass in kg, l = length in meters, t = time in secs
+// q = charge in coulombs, T = temperature in kelvins
+// k_B Boltzmann constant = 1.3806488*10^-23 m^2*kg/(s^2*K)
+//   so units m l2 t-2 K-1 = energy/temp K
+// NA Avogadro’s constant = 6.0221413*10^23 molecules/L
+
+real epspf = 1e-10;		// for pf stabilization                        U = 1
+real eps0 = 8.8542*1e-12;	// permittivity of vacuum in F/m               U = m-1 l-3 t2 q2 
+real epsrH2O = 78;		// relative permittivity of H2O                U = 1
+real epsrSi = 11.68;		// relative permittivity of silicon            U = 1
+real epsrSiO2 = 3.9;		// relative permittivity of silicon dioxide    U = 1
+lDn = 1.92*1e-9;	// diffusion coefficient for Cl- ions in m^2/s in H2O  U = l2 t-1
+lDp = 1.85*1e-9;	// diffusion coefficient for K+  ions in m^2/s in H2O  U = l2 t-1
+lnu = .798*1e-3;	// dynamic viscosity of H2O in kg/(m*s)                U = m l-1 t-1
+le = 1.60217662*1e-19;	// Coulombs, magnitude of charge on electron           U = q
+lmun = 7.44*1e-8;	// mobility of Cl- in m^2/(V*s) at 300 K               U = q t m-1
+lmup = 7.16*1e-8;	// mobility of K+  in m^2/(V*s) at 300 K               U = q t m-1
+rhof = 993.9;		// kg/m^3 density of fluid (water) at 35C              U = m l-3
+kB = 1.3806488*1e-23;	// Boltzmann constant in Joule/K		       U = m l2 t-2 K-1
+real dA = 1.660539040e-27;	// kg in 1 Dalton			       U = m
+real DAP = 2.222e-11;	// diffusivity of AP		                       U = l^2 t-1
+real rhop = 1.37*1e+3;	// protein mass density				       U = m l-3
+
+// convert to micron length scale
+	m2mu = 1; mu2m = 1/m2mu;	// remove length scaling temporarily
+eps0 /= m2mu^3;
+lDn *= m2mu^2;
+lDp *= m2mu^2;
+lnu /= m2mu;
+rhof /= m2mu^3;
+
+real TC = 35;		// temperature in Centigrade
+real TF = (9.0/5.0)*TC + 32;
+T = TC + 273.16;	// temperature in Kelvin
+// Chemical Physics Letters, Volume 367, Issues 5–6, 10 January 2003, Pages 669–671
+// "Temperature dependence of the permittivity of water", A Catenaccio, et. al.
+epsrH2O = 5321/T + 233.76 - 0.9297*T + 0.1417*1e-2*T*T -0.8292*1e-6*T*T*T;
+lepsw = eps0*epsrH2O;		// permittivity of H2O in F/m at 300 K
+lepsSi = eps0*epsrSi;		// permittivity of silicon
+lepsSiO2 = eps0*epsrSiO2;	// permittivity of silicon dioxide
+
+
+if(mon>0) {
+   cout.precision(4);
+   if(m2mu!=1) { cout << " !!! below converted to micron length scale using m2mu=1e+6\n"; }
+   cout << " epspf =\t" <<  epspf << "\t\t for pf stabilization\n";
+   cout << " eps0 =\t\t" <<  eps0 << "\t permittivity of vacuum in F/m\n";
+   cout << " epsrH2O =\t" <<  epsrH2O << "\t\t relative permittivity of H2O\n";
+   cout << " epsrSi =\t" <<  epsrSi << "\t\t relative permittivity of silicon\n";
+   cout << " epsrSiO2 =\t" <<  epsrSiO2 << "\t\t relative permittivity of silicon dioxide\n";
+   cout << " lDn =\t\t" <<  lDn << "\t diffusion coefficient for Cl- ions in m^2/s in H2O\n";
+   cout << " lDp =\t\t" <<  lDp << "\t diffusion coefficient for K+  ions in m^2/s in H2O\n";
+   cout << " lnu =\t\t" <<  lnu << "\t dynamic viscosity of H2O in kg/(m*s)\n";
+   cout << " le =\t\t" <<  le << "\t Coulombs, magnitude of charge on electron\n";
+   cout << " lmun =\t\t" <<  lmun << "\t mobility of Cl- in m^2/(V*s) at 300 K\n";
+   cout << " lmup =\t\t" <<  lmup << "\t mobility of K+  in m^2/(V*s) at 300 K\n";
+   cout << " rhof =\t\t" <<  rhof << "\t\t kg/m^3, density of fluid (water)\n";
+   cout << " lepsw =\t" <<  lepsw << "\t permittivity of H2O in F/m at 300 K\n";
+   cout << " lepsSi =\t" <<  lepsSi << "\t permittivity of silicon in F/m\n";
+   cout << " lepsSiO2 =\t" <<  lepsSiO2 << "\t permittivity of silicon dioxide in F/m\n";
+   cout << " kB =\t\t" <<  kB << "\t Boltzmann constant in Joule/K\n";
+   cout << " dA =\t\t" <<  dA << "\t Dalton in kg\n";
+   cout << " rhop =\t\t" <<  rhop << "\t\t typical protein mass density kg/m^3\n";
+   cout << endl;
+   cout.flush;
+   cout.default;
+}
+
+// convert to micron length scale
+real lD = (lDp+lDn)/2.0;// approx single diffusivity coef for both ions, the average
+NA = 6.0221413*1e23;	// Avagadro's Number, molecules/liter	'
+I = 1e-3;		// 1 mM electrolyte
+real n0 = NA*I*1e+3;	// particles/m^3
+n0 /= m2mu^3;		// convert to micron length scale
+NA /= m2mu^3;		// convert to molecules/micron^3 
+kB *= m2mu^2;		// convert to micron length scale
+zp = 1.0; zn = 1.0;	// KCl is a 1:1 electrolyte
+lambdaD = lepsw*kB*T/(2.0*n0*zp*le*zn*le);	// square of Debye length
+kappa2 = 1.0/lambdaD;	// kappa squared 
+lambdaD = sqrt(lambdaD);// Debye screening length, about 10 nm for 1 mM electrolyte
+kappa = 1.0/lambdaD;
+real k0 = le/(kB*T);	// used in no-flux expressions
+// lmu same as Squires-Bazant e*b, use single mobility for both ions, an approximation
+real lmu = (lmun + lmup)/2.0;
+
+if(mon>0) {
+   cout.precision(4);
+   if(m2mu!=1) { cout << " !!! below converted to micron length scale using m2mu=1e+6\n"; }
+   cout << " n0 = \t\t" << n0 << " bulk ion concentration in particles/m^3\n";
+   if(mon>1) cout << " N_A = \t\t" << NA << " Avagadro's number\n";
+   cout << " T =\t\t" << TC << " C, ";
+   cout << TF << " F, ";
+   cout << T << " K\n";
+   cout << " ave D =\t" << lD << " (m^2/s)\n";
+   string sl="microns";;
+   if(m2mu==1) sl="meters";
+   cout << " lambdaD =\t" << lambdaD
+             << " Debye length in " << sl << " in " << I*1e+3 
+                << " mM electrolyte at " << T-273.16 << " C\n"; 
+   cout << " ave mu =\t" << lmu << " (C*s)/kg\n";
+   cout << " e/(kB*T) = \t" << k0 << "\te/(k_B*T), for no-flux condition\n";
+   cout << endl;
+   cout.flush;
+}
+
+// convert to micron length scale
+real zeta, sigma;
+zeta = -0.1;			// V (-100 mV), Kirby & Hasselbrink, Fig. 6 w/ pC=3 (1 mM)
+sigma = zeta*epsrH2O*eps0*kappa;// surface charge density, Debye-Huckel small chge limit
+// 170819; E0 now in include file like "parms_cone_E0=1e4.idp"
+//real E0 = 1e4;			// 100 V/cm, S-B "typical" external field magnitude;
+E0 /= m2mu;			// convert to microns
+real aa = 1e-5;			// 10 microns, S-B "typical"
+aa /= m2mu;			// convert to microns
+real U0 = lepsw*E0*E0*aa/lnu;	// bulk fluid velocity scale, p 233 Squires, Bazant
+
+// Squires-Bazant "typical" experimental values
+real psi;				// dimensionless surface potential
+psi = le*E0*aa/(kB*T);			// E0*aa = phi_0, the potential scale, pg 233 S-B
+
+if(mon>2) {
+   cout.precision(4);
+   if(m2mu!=1) { cout << " !!! below converted to micron length scale using m2mu=1e+6\n"; }
+   // SiO2 surface has 5 Ang pitch (from crystal dimensions), 4 moles per nm^2
+   cout << " sigma =\t" << sigma << ",\t" << sigma/(le*kappa2)
+                << " electrons per lambdaD^2\n";
+   cout << "\n E0 =\t\t" << E0*1e-2 << " V/cm , 100 is S-B typical external field\n"; 
+   if(mon>3) {
+      cout << " sigma =\t" << sigma*1e-16/le << " electrons per 0.1nm^2\n";
+      cout << " a =\t\t" << aa*1e6 << " microns S-B typical\n"; 
+   }
+   cout << " zeta =\t\t" << zeta*1e3 << " mV, zeta/potential Psi0 S-B typical\n";
+   cout << " U0 =\t\t" << U0*1e3 << " slip velocity in mm/s S-B typical\n";
+   cout << " psi =\t\t" << psi << " (dimensionless surface potential)\n";
+   cout << endl;
+   cout.flush;
+   cout.default;
+}
+
+/*@ scaled constants below *@/
+real k1,k2,k3,k4,k5,k6,k7,k8; // constants for scaled equations
+k1 = rhof*U0*U0;
+k2 = lnu*kappa*U0;
+k3 = 1.0;
+k4 = 2.0*n0*psi*le*zeta;
+k5 = 2.0*n0*psi*le/(lepsw*kappa*kappa);
+k6 = psi;
+k7 = 1.0;
+k8 = U0/(kappa*lD);
+
+if(mon>2) {
+   cout.precision(4);
+   cout << " Navier-Stokes scaled coefficients\n";
+   cout << " k1 =\t" << k1 << "\t convective acceleration term\n";
+   cout << " k2 =\t" << k2 << "\t\t viscosity term\n";
+   cout << " k3 =\t" << k3 << "\t\t pressure term\n";
+   cout << " k4 =\t" << k4 << "\t\t electric field term\n";
+   cout << "\n Poisson Equation scaled coefficient\n";
+   cout << " k5 =\t" << k5 << "\t\t charge density term\n";
+   cout << "\n Poisson-Nernst-Planck scaled coefficients\n";
+   cout << " k6 =\t" << k6 << "\t\t mobility term\n";
+   cout << " k7 =\t" << k7 << "\t\t diffusion term\n";
+   cout << " k8 =\t" << k8 << "\t\t fluid velocity term\n";
+   cout << endl;
+   cout.flush;
+   cout.default;
+}
+
+/@* scaled constants above @*/
+
+if(mon>0) { cout << "  exit PNP_constants_microns_2.idp\n\n"; cout.flush; }
+
+// end file: PNP_constants_microns_2.idp 

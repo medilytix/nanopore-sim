@@ -1,0 +1,57 @@
+// Sun 13 Aug: where is the surface term ????
+
+// file: "9th_oseen.idp" from "$FF/PNP+NScalc2016/2016_Dec/rev_cone-0.075_calc/5th_Oseen.idp"
+// 170417 make 'on(...' more consistent
+// at entrance, expects:
+//	* nu = Pe/Re with Pe = U0*L0/lD and Re = rhof*U0*L0/lnu
+//	* phi to be scaled phi such that int1d(Th,laxis)([Ex,Ey]'*[-N.y,N.x]) = E0/phi0, E0=1e+4, phi0=zeta=1e-1
+//	* chiv = coefficient of (ip-in)*grad(phi) = 2*le*n0*psi/PP0 with
+//		psi = (le*phi0)/(kB*T) and PP0 = lD*U0*rhof/L0 ond U0 = lmu*E0
+//		and phi0 = abs(zeta) (zeta potential = -0.1 V used here)
+//	* expects [ux,uy]'*[-N.y,N.x] to be set as lmu*[EX,EY]'*[-N.y,N.x] with EX,EY the scaled values
+//	* geometry as in ../sim_EOF_final_0.edp ( 40K Apr  8 07:48 )
+//	  - lmbrn = [21,22,23], lVtop = [16,17]; lVbot = [11,12]; lnos = [lVbot,lmbrn,lVtop];
+//	  - laxis = [19]; lslant = [22]; linp = [18]; lout = [10]; lGauss(10:18);
+
+if(mon>0) { cout << "\n enter \"" << FILE << "\"\n"; cout.flush; }
+
+//  operator 
+macro Grad(u1,u2) [ dx(u1),dy(u1), dx(u2),dy(u2)]// ∂_i u_j
+macro UgradV(u1,u2,V1,V2) [ [u1,u2]'*[dx(V1),dy(V1)], [u1,u2]'*[dx(V2),dy(V2)] ]// sum over i & j :  u_i ∂_i v_j 
+						// so UgradV(ux,uy, ux, uy)'*[V1,V2] is (u_i ∂_i) u_j V_j
+macro div(u1,u2)  (dx(u1)+dy(u2))// ∂_i u_i
+
+  problem Oseen([dux,duy,dPP],[V1,V2,QQ],solver=UMFPACK,eps=1.0e-10,tgv=1e30,dimKrylov=150) =
+       int2d(ThF) ( x * ( nu * (Grad(dux,duy)'*Grad(V1,V2))	// nu = Peclet number / Reynolds number
+                             + nu * dux*V1/(x*x)	// term from curvilinear cylindrical system
+         + Pe*UgradV(dux,duy, ux, uy)'*[V1,V2]
+         + Pe*UgradV( ux, uy,dux,duy)'*[V1,V2]
+         - div( V1, V2)*dPP - V1*dPP/x	// 2nd term from curvilinear cylindrical system
+         - div(dux,duy)* QQ -dux* QQ/x	// 2nd term from curvilinear cylindrical system
+         - 1e-8*dPP*QQ			// stabilization term
+       )
+     )
+     - int2d(ThF) ( x * ( nu * (Grad(ux,uy)'*Grad(V1,V2))
+                             + nu * ux*V1/(x*x)
+         + Pe*UgradV(ux,uy, ux, uy)'*[V1,V2]
+         - div(V1,V2)*PP - V1*PP/x
+         - div(ux,uy)*QQ - ux*QQ/x		// div dot u, incompressibility term
+         + chiv*(ip-in)*grad(phi)'*[V1,V2]	// electric force term (ip-in is (n+ - n-)/(2*n0*psi) in fluid)
+         - 1e-8*PP*QQ
+       )
+     )
+     + on(lVbot,lVtop,dux=0,duy=0)	// ux and uy zero and remain so on no-slip electrodes
+     + on(lmbrn,dux=0,duy=0)	// ux, uy et to lmu*Ex, lmu*Ey reespectively & remain so on charged membrane surface
+     + on(laxis,dux=0)		// on rotation axis, ux = 0 initially & remain so
+     ;
+
+PPold = 0;
+
+// N.B. -- expects [ux,uy]'*[-N.y,N.x] to be set as lmu*[EX,EY]'*[-N.y,N.x]
+//      --   before execution on the charged border lmbrn = [21,22,23]
+//      --   which accounts for the surface charge at the membrane / fluid interface 
+// N.B. -- lnos = [lVbot,lmbrn,lVtop]; lVtop = [16,17]; lVbot = [11,12]; laxis = [19];
+//      -- lslant = [22]; linp = [18]; lout = [10]; lGauss(10:18);
+
+if(mon>0) { cout << "  exit \"" << FILE << "\"\n\n"; cout.flush; }
+
